@@ -1,457 +1,746 @@
-import logging
 import os
 import sqlite3
 import random
 import string
+import logging
 from datetime import datetime
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# ===== CONFIGURATION =====
-TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
+# ===== SETUP =====
+TOKEN = os.environ.get('BOT_TOKEN')
+ADMIN_ID = int(os.environ.get('ADMIN_ID', '0'))
 
-if not TOKEN:
-    print("❌ ERROR: BOT_TOKEN not set!")
-    exit(1)
-
-if not ADMIN_ID:
-    print("❌ ERROR: ADMIN_ID not set!")
+if not TOKEN or not ADMIN_ID:
+    print("❌ Missing BOT_TOKEN or ADMIN_ID")
     exit(1)
 
 logging.basicConfig(level=logging.INFO)
 
 # ===== DATABASE =====
-DB_PATH = 'bot.db'
+DB = 'bot.db'
 
-def get_db():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
+def db():
+    return sqlite3.connect(DB, check_same_thread=False)
 
-def init_db():
-    conn = get_db()
+def init():
+    conn = db()
     c = conn.cursor()
-    
-    c.execute('''
-    CREATE TABLE IF NOT EXISTS users (
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
         first_name TEXT,
         balance REAL DEFAULT 0,
-        referral_count INTEGER DEFAULT 0,
+        referrals INTEGER DEFAULT 0,
         referred_by INTEGER DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
-    
-    c.execute('''
-    CREATE TABLE IF NOT EXISTS redeem_codes (
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS codes (
         code TEXT PRIMARY KEY,
         amount REAL,
-        used_by INTEGER DEFAULT NULL,
-        used_at TEXT DEFAULT NULL,
+        used INTEGER DEFAULT 0,
         created_by INTEGER,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        is_used INTEGER DEFAULT 0
-    )
-    ''')
-    
-    c.execute('''
-    CREATE TABLE IF NOT EXISTS transactions (
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        plan TEXT,
+        username TEXT,
+        password TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS transactions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
         type TEXT,
         amount REAL,
         description TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
-    
-    c.execute('''
-    CREATE TABLE IF NOT EXISTS hosting_requests (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        plan_name TEXT,
-        username TEXT,
-        password TEXT,
-        status TEXT DEFAULT 'pending',
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
-    
+    )''')
     conn.commit()
     conn.close()
 
-init_db()
+init()
 
 # ===== DATABASE FUNCTIONS =====
 
-def add_user(user_id, username, first_name, referred_by=0):
-    conn = get_db()
+def get_user(uid):
+    conn = db()
+    c = conn.cursor()
+    c.execute('SELECT * FROM users WHERE user_id = ?', (uid,))
+    r = c.fetchone()
+    conn.close()
+    return r
+
+def add_user(uid, username, first_name, ref=0):
+    conn = db()
     c = conn.cursor()
     c.execute('INSERT OR IGNORE INTO users (user_id, username, first_name, referred_by) VALUES (?, ?, ?, ?)',
-              (user_id, username, first_name, referred_by))
+              (uid, username, first_name, ref))
+    if ref:
+        c.execute('UPDATE users SET balance = balance + 15, referrals = referrals + 1 WHERE user_id = ?', (ref,))
+        c.execute('SELECT referrals FROM users WHERE user_id = ?', (ref,))
+        count = c.fetchone()[0]
+        if count % 5 == 0:
+            c.execute('UPDATE users SET balance = balance + 25 WHERE user_id = ?', (ref,))
     conn.commit()
     conn.close()
 
-def get_user(user_id):
-    conn = get_db()
+def update_balance(uid, amt):
+    conn = db()
     c = conn.cursor()
-    c.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
-    result = c.fetchone()
-    conn.close()
-    return result
-
-def update_balance(user_id, amount):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amount, user_id))
+    c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amt, uid))
     conn.commit()
     conn.close()
 
-def get_referral_count(user_id):
-    conn = get_db()
+def get_refs(uid):
+    conn = db()
     c = conn.cursor()
-    c.execute('SELECT COUNT(*) FROM users WHERE referred_by = ?', (user_id,))
-    result = c.fetchone()[0]
+    c.execute('SELECT COUNT(*) FROM users WHERE referred_by = ?', (uid,))
+    r = c.fetchone()[0]
     conn.close()
-    return result
+    return r
 
-def generate_redeem_code(amount, created_by):
-    conn = get_db()
+def gen_code(amt, created_by):
+    conn = db()
     c = conn.cursor()
-    code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=12))
-    c.execute('INSERT INTO redeem_codes (code, amount, created_by) VALUES (?, ?, ?)',
-              (code, amount, created_by))
+    code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
+    c.execute('INSERT INTO codes (code, amount, created_by) VALUES (?, ?, ?)', (code, amt, created_by))
     conn.commit()
     conn.close()
     return code
 
-def redeem_code(code, user_id):
-    conn = get_db()
+def use_code(code, uid):
+    conn = db()
     c = conn.cursor()
-    c.execute('SELECT * FROM redeem_codes WHERE code = ? AND is_used = 0', (code,))
-    result = c.fetchone()
-    if result:
-        c.execute('UPDATE redeem_codes SET is_used = 1, used_by = ?, used_at = CURRENT_TIMESTAMP WHERE code = ?',
-                  (user_id, code))
+    c.execute('SELECT * FROM codes WHERE code = ? AND used = 0', (code,))
+    r = c.fetchone()
+    if r:
+        c.execute('UPDATE codes SET used = 1 WHERE code = ?', (code,))
+        update_balance(uid, r[1])
         conn.commit()
         conn.close()
-        update_balance(user_id, result[1])
-        return True, result[1]
+        return True, r[1]
     conn.close()
     return False, 0
 
-def create_hosting_request(user_id, plan_name):
-    conn = get_db()
+def add_order(uid, plan):
+    conn = db()
     c = conn.cursor()
-    username = f"user_{user_id}_{random.randint(100,999)}"
+    username = f"user_{uid}_{random.randint(100,999)}"
     password = ''.join(random.choices(string.ascii_letters + string.digits, k=12))
-    c.execute('''
-        INSERT INTO hosting_requests (user_id, plan_name, username, password)
-        VALUES (?, ?, ?, ?)
-    ''', (user_id, plan_name, username, password))
+    c.execute('INSERT INTO orders (user_id, plan, username, password) VALUES (?, ?, ?, ?)',
+              (uid, plan, username, password))
     conn.commit()
     conn.close()
     return username, password
 
-def get_pending_requests():
-    conn = get_db()
+def get_orders():
+    conn = db()
     c = conn.cursor()
-    c.execute('SELECT * FROM hosting_requests WHERE status = "pending"')
-    result = c.fetchall()
+    c.execute('SELECT * FROM orders WHERE status = "pending"')
+    r = c.fetchall()
     conn.close()
-    return result
+    return r
 
-def confirm_hosting_request(request_id):
-    conn = get_db()
+def confirm_order(oid):
+    conn = db()
     c = conn.cursor()
-    c.execute('UPDATE hosting_requests SET status = "active" WHERE id = ?', (request_id,))
+    c.execute('UPDATE orders SET status = "active" WHERE id = ?', (oid,))
     conn.commit()
     conn.close()
 
-def get_total_users():
-    conn = get_db()
+def get_total():
+    conn = db()
     c = conn.cursor()
     c.execute('SELECT COUNT(*) FROM users')
-    result = c.fetchone()[0]
+    r = c.fetchone()[0]
     conn.close()
-    return result
+    return r
 
-def get_top_referrers(limit=10):
-    conn = get_db()
+def get_top_users(limit=10):
+    conn = db()
     c = conn.cursor()
     c.execute('''
-        SELECT user_id, username, referral_count, balance 
+        SELECT user_id, username, referrals, balance 
         FROM users 
-        ORDER BY referral_count DESC 
+        ORDER BY referrals DESC 
         LIMIT ?
     ''', (limit,))
-    result = c.fetchall()
+    r = c.fetchall()
     conn.close()
-    return result
+    return r
+
+def get_total_balance():
+    conn = db()
+    c = conn.cursor()
+    c.execute('SELECT SUM(balance) FROM users')
+    r = c.fetchone()[0] or 0
+    conn.close()
+    return r
+
+def get_unused_codes():
+    conn = db()
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) FROM codes WHERE used = 0')
+    r = c.fetchone()[0]
+    conn.close()
+    return r
 
 # ===== PLANS =====
-
 PLANS = {
-    'starter': {'name': 'Starter', 'price': 50, 'storage': '5GB', 'bandwidth': '50GB', 'domains': 1, 'days': 30},
-    'pro': {'name': 'Pro', 'price': 100, 'storage': '20GB', 'bandwidth': '200GB', 'domains': 5, 'days': 30},
-    'business': {'name': 'Business', 'price': 200, 'storage': '50GB', 'bandwidth': 'Unlimited', 'domains': 20, 'days': 30},
-    'enterprise': {'name': 'Enterprise', 'price': 500, 'storage': '200GB', 'bandwidth': 'Unlimited', 'domains': 'Unlimited', 'days': 30}
+    'starter': {'name': '🌱 Starter', 'price': 50, 'emoji': '🌱'},
+    'pro': {'name': '🚀 Pro', 'price': 100, 'emoji': '🚀'},
+    'business': {'name': '💼 Business', 'price': 200, 'emoji': '💼'},
+    'enterprise': {'name': '🏢 Enterprise', 'price': 500, 'emoji': '🏢'}
 }
 
-# ===== BOT HANDLERS =====
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    referred_by = context.args[0] if context.args else 0
+# ===== MAIN MENU =====
+async def main_menu(update, context):
+    """Show main menu with premium buttons"""
+    uid = update.effective_user.id
+    user = get_user(uid)
     
-    add_user(user.id, user.username, user.first_name, int(referred_by) if referred_by else 0)
+    if not user:
+        await update.message.reply_text("❌ Please /start first!")
+        return
     
-    if referred_by:
-        referrer_id = int(referred_by)
-        update_balance(referrer_id, 15)
-        count = get_referral_count(referrer_id)
-        if count % 5 == 0:
-            update_balance(referrer_id, 25)
-            await context.bot.send_message(referrer_id, f"🎉 Bonus 25 credits for 5 referrals!")
-        await context.bot.send_message(referrer_id, f"🎉 New referral! +15 credits")
+    balance = user[2]
+    refs = get_refs(uid)
+    username = update.effective_user.username or "User"
     
-    user_data = get_user(user.id)
-    balance = user_data[3] if user_data else 0
-    referrals = get_referral_count(user.id)
+    # Format balance with 2 decimal places
+    balance_str = f"{balance:.2f}"
     
+    # Premium UI with emojis and layout
     keyboard = [
-        [InlineKeyboardButton("🌐 PLANS", callback_data='plans')],
-        [InlineKeyboardButton("👤 PROFILE", callback_data='profile')],
-        [InlineKeyboardButton("🎁 REDEEM", callback_data='redeem')],
-        [InlineKeyboardButton("👥 REFERRAL", callback_data='referral')],
-        [InlineKeyboardButton("🏆 LEADERBOARD", callback_data='leaderboard')]
+        [
+            InlineKeyboardButton("🎬 HOSTING PLANS", callback_data='plans')
+        ],
+        [
+            InlineKeyboardButton("👤 MY PROFILE", callback_data='profile'),
+            InlineKeyboardButton("🎁 REDEEM", callback_data='redeem')
+        ],
+        [
+            InlineKeyboardButton("👥 REFERRAL", callback_data='referral'),
+            InlineKeyboardButton("🏆 LEADERBOARD", callback_data='leaderboard')
+        ],
+        [
+            InlineKeyboardButton("📊 SUPPORT", callback_data='support')
+        ]
     ]
     
-    await update.message.reply_text(
-        f"✨ Welcome {user.first_name}!\n\n💰 Balance: {balance} credits\n👥 Referrals: {referrals}\n\nChoose an option:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    text = f"""✨ **Welcome to Premium Hosting Bot!** 
 
-async def show_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
+Get working hosting accounts instantly.
+
+👤 User ID: `{uid}`
+💰 Your Balance: `{balance_str}` Balance
+👥 Referrals: `{refs}`
+
+Select an option below to get started:"""
+
+    # Check if called from command or callback
+    if hasattr(update, 'message') and update.message:
+        await update.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    else:
+        query = update.callback_query
+        await query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+
+# ===== START COMMAND =====
+async def start(update, context):
+    uid = update.effective_user.id
+    username = update.effective_user.username or ""
+    first_name = update.effective_user.first_name or "User"
+    ref = context.args[0] if context.args else 0
+    
+    add_user(uid, username, first_name, int(ref) if ref else 0)
+    
+    # Notify referrer
+    if ref:
+        try:
+            referrer_id = int(ref)
+            msg = f"🎉 New referral! @{username or first_name} joined!\n+15 credits!"
+            await context.bot.send_message(referrer_id, msg)
+        except:
+            pass
+    
+    await main_menu(update, context)
+
+# ===== MENU COMMAND =====
+async def menu(update, context):
+    """/menu command"""
+    await main_menu(update, context)
+
+# ===== BACK BUTTON =====
+async def back(update, context):
+    """Back to main menu"""
+    query = update.callback_query
+    await query.answer()
+    await main_menu(update, context)
+
+# ===== PLANS =====
+async def show_plans(update, context):
     query = update.callback_query
     await query.answer()
     
-    text = "🌐 HOSTING PLANS\n\n"
+    text = "🌐 **HOSTING PLANS**\n\n"
     keyboard = []
     
-    for key, plan in PLANS.items():
-        text += f"{plan['name']} - {plan['price']} credits\n💾 {plan['storage']} | 📡 {plan['bandwidth']}\n\n"
-        keyboard.append([InlineKeyboardButton(f"Buy {plan['name']} - {plan['price']} credits", callback_data=f'buy_{key}')])
+    for k, v in PLANS.items():
+        text += f"""{v['emoji']} **{v['name']}**
+💳 Price: `{v['price']}` credits
+📅 Duration: 30 days
+━━━━━━━━━━━━━━━━\n\n"""
+        keyboard.append([InlineKeyboardButton(f"{v['emoji']} Buy {v['name']} - {v['price']} credits", callback_data=f'buy_{k}')])
     
-    keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data='back')])
+    keyboard.append([InlineKeyboardButton("⬅️ BACK", callback_data='back')])
     
     await query.edit_message_text(
         text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
     )
 
-async def buy_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def buy_plan(update, context):
     query = update.callback_query
     await query.answer()
     
-    plan_key = query.data.split('_')[1]
-    plan = PLANS[plan_key]
-    user_id = query.from_user.id
-    user = get_user(user_id)
+    uid = query.from_user.id
+    key = query.data.split('_')[1]
+    plan = PLANS[key]
+    user = get_user(uid)
     
     if not user:
         await query.edit_message_text("❌ Please /start first!")
         return
     
-    if user[3] < plan['price']:
+    if user[2] < plan['price']:
         await query.edit_message_text(
-            f"❌ Need {plan['price']} credits, you have {user[3]}",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back')]])
+            f"❌ **Insufficient Balance!**\n\n"
+            f"Need: `{plan['price']}` credits\n"
+            f"Have: `{user[2]:.2f}` credits\n\n"
+            f"💡 Earn more via referrals or redeem codes!",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]),
+            parse_mode='Markdown'
         )
         return
     
-    update_balance(user_id, -plan['price'])
-    username, password = create_hosting_request(user_id, plan['name'])
+    # Deduct credits
+    update_balance(uid, -plan['price'])
+    username, password = add_order(uid, plan['name'])
     
+    # Notify admin
     await context.bot.send_message(
         ADMIN_ID,
-        f"🔔 NEW ORDER!\nUser: {user_id}\nPlan: {plan['name']}\nUsername: {username}\nPassword: {password}"
+        f"🔔 **NEW ORDER!**\n\n"
+        f"👤 User: {uid}\n"
+        f"📦 Plan: {plan['name']}\n"
+        f"👤 Username: `{username}`\n"
+        f"🔑 Password: `{password}`\n\n"
+        f"Confirm: `/confirm ORDER_ID`",
+        parse_mode='Markdown'
     )
     
     await query.edit_message_text(
-        f"✅ {plan['name']} activated!\nAdmin will create hosting within 24 hours.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📊 Profile", callback_data='profile')]])
+        f"✅ **{plan['name']} Plan Activated!**\n\n"
+        f"💰 Credits Used: `{plan['price']}`\n"
+        f"📅 Duration: 30 Days\n\n"
+        f"⏳ Admin will create your hosting within 24 hours.\n"
+        f"You'll receive login details here.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📊 MY PROFILE", callback_data='profile')]]),
+        parse_mode='Markdown'
     )
 
-async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ===== PROFILE =====
+async def profile(update, context):
     query = update.callback_query
     await query.answer()
     
-    user = get_user(query.from_user.id)
+    uid = query.from_user.id
+    user = get_user(uid)
+    
     if not user:
         await query.edit_message_text("❌ Please /start first!")
         return
     
-    referrals = get_referral_count(user[0])
+    refs = get_refs(uid)
+    balance_str = f"{user[2]:.2f}"
     
-    await query.edit_message_text(
-        f"👤 PROFILE\n\nID: {user[0]}\nBalance: {user[3]} credits\nReferrals: {referrals}\n\nHosting: Pending approval",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back')]])
-    )
+    keyboard = [
+        [InlineKeyboardButton("🔄 REFRESH", callback_data='profile')],
+        [InlineKeyboardButton("⬅️ BACK", callback_data='back')]
+    ]
+    
+    text = f"""👤 **MY PROFILE**
 
-async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        "🎁 REDEEM CODE\n\nSend: /redeem YOURCODE",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back')]])
-    )
+🆔 User ID: `{uid}`
+📛 Name: {user[1] or 'N/A'}
+💰 Balance: `{balance_str}` credits
+👥 Total Referrals: `{refs}`
 
-async def redeem_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("❌ Usage: /redeem CODE")
-        return
-    
-    code = context.args[0].upper()
-    user_id = update.effective_user.id
-    
-    success, amount = redeem_code(code, user_id)
-    
-    if success:
-        user = get_user(user_id)
-        await update.message.reply_text(f"✅ Added {amount} credits!\nNew balance: {user[3]}")
-    else:
-        await update.message.reply_text("❌ Invalid or used code!")
+**💻 Hosting Status:**
+⏳ Pending Admin Approval
 
-async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    link = f"https://t.me/{context.bot.username}?start={user_id}"
-    referrals = get_referral_count(user_id)
-    
-    await query.edit_message_text(
-        f"👥 REFERRAL\n\nYour link:\n{link}\n\nReferrals: {referrals}\n\n15 credits per referral\n25 bonus every 5 referrals",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back')]])
-    )
-
-async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    top = get_top_referrers(10)
-    text = "🏆 TOP REFERRERS\n\n"
-    
-    for i, u in enumerate(top, 1):
-        medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"{i}."
-        name = f"@{u[1]}" if u[1] else f"User {u[0]}"
-        text += f"{medal} {name} - {u[2]} referrals\n"
+📊 Referral Progress: {refs}/5 for bonus!"""
     
     await query.edit_message_text(
         text,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back')]])
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
     )
 
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⚠️ Unauthorized!")
-        return
-    
-    pending = get_pending_requests()
-    total = get_total_users()
+# ===== REDEEM =====
+async def redeem(update, context):
+    query = update.callback_query
+    await query.answer()
     
     keyboard = [
-        [InlineKeyboardButton("🔑 Generate Code", callback_data='gen_code')],
-        [InlineKeyboardButton("📊 Stats", callback_data='stats')],
-        [InlineKeyboardButton("📦 Pending", callback_data='pending')]
+        [InlineKeyboardButton("⬅️ BACK", callback_data='back')]
     ]
     
-    await update.message.reply_text(
-        f"🛠️ ADMIN\nUsers: {total}\nPending: {len(pending)}",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        f"""🎁 **REDEEM CODE**
+
+Enter your redeem code using:
+`/redeem YOURCODE`
+
+💡 Codes are provided by admins during promotions!
+📌 Format: /redeem ABC123XYZ""",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
     )
 
-async def generate_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def redeem_command(update, context):
+    if not context.args:
+        await update.message.reply_text(
+            "❌ **Usage:** `/redeem CODE`\n\nExample: `/redeem ABC123XYZ`",
+            parse_mode='Markdown'
+        )
+        return
+    
+    code = context.args[0].upper()
+    uid = update.effective_user.id
+    
+    success, amount = use_code(code, uid)
+    
+    if success:
+        user = get_user(uid)
+        await update.message.reply_text(
+            f"✅ **Redeem Successful!**\n\n"
+            f"💰 +`{amount}` credits added!\n"
+            f"📊 New Balance: `{user[2]:.2f}` credits",
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text(
+            "❌ **Invalid Code!**\n\n"
+            "• Code may be expired\n"
+            "• Code may already be used\n"
+            "• Please check and try again",
+            parse_mode='Markdown'
+        )
+
+# ===== REFERRAL =====
+async def referral(update, context):
+    query = update.callback_query
+    await query.answer()
+    
+    uid = query.from_user.id
+    link = f"https://t.me/{context.bot.username}?start={uid}"
+    refs = get_refs(uid)
+    
+    text = f"""👥 **REFERRAL PROGRAM**
+
+🔗 **Your Referral Link:**
+`{link}`
+
+📊 **Your Referrals:** `{refs}`
+
+🎁 **Rewards System:**
+• `15` credits per referral
+• `25` bonus credits every 5 referrals
+• Top referrers get exclusive rewards!
+
+📢 Share your link and earn free hosting!"""
+    
+    keyboard = [
+        [InlineKeyboardButton("📋 COPY LINK", callback_data='copy_link')],
+        [InlineKeyboardButton("⬅️ BACK", callback_data='back')]
+    ]
+    
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+# ===== LEADERBOARD =====
+async def leaderboard(update, context):
+    query = update.callback_query
+    await query.answer()
+    
+    top = get_top_users(10)
+    text = "🏆 **TOP REFERRERS**\n\n"
+    
+    if not top:
+        text += "No users yet! Be the first! 🚀"
+    else:
+        for i, u in enumerate(top, 1):
+            medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"{i}."
+            name = f"@{u[1]}" if u[1] else f"User {u[0]}"
+            text += f"{medal} {name}\n"
+            text += f"   👥 {u[2]} referrals | 💰 {u[3]:.0f} credits\n\n"
+    
+    keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
+    
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+# ===== SUPPORT =====
+async def support(update, context):
+    query = update.callback_query
+    await query.answer()
+    
+    text = """📊 **SUPPORT**
+
+❓ **How to earn credits?**
+1. Refer friends → 15 credits each
+2. Every 5 referrals → 25 bonus credits
+3. Redeem promo codes
+
+❓ **How to get hosting?**
+1. Earn 50+ credits
+2. Buy a plan from PLANS menu
+3. Admin creates hosting for you
+
+❓ **Need help?**
+Contact admin: @Free_hostingbyreferbot
+
+🛠️ **Commands:**
+/start - Main menu
+/menu - Show menu
+/redeem - Redeem code
+/profile - Check balance
+
+💡 Tip: Share your referral link everywhere!"""
+    
+    keyboard = [
+        [InlineKeyboardButton("⬅️ BACK", callback_data='back')]
+    ]
+    
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+# ===== COPY LINK =====
+async def copy_link(update, context):
+    query = update.callback_query
+    await query.answer("📋 Link copied to clipboard! (Tap and hold to copy)", show_alert=True)
+
+# ===== ADMIN COMMANDS =====
+async def admin_panel(update, context):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ **Unauthorized!**", parse_mode='Markdown')
+        return
+    
+    pending = get_orders()
+    total = get_total()
+    total_bal = get_total_balance()
+    unused = get_unused_codes()
+    
+    keyboard = [
+        [InlineKeyboardButton("🔑 GENERATE CODE", callback_data='gen_code')],
+        [InlineKeyboardButton("📊 STATISTICS", callback_data='stats')],
+        [InlineKeyboardButton("📦 PENDING ORDERS", callback_data='pending')],
+        [InlineKeyboardButton("👥 USERS", callback_data='users')]
+    ]
+    
+    text = f"""🛠️ **ADMIN PANEL**
+
+👥 Total Users: `{total}`
+💰 Total Balance: `{total_bal:.2f}` credits
+📦 Pending Orders: `{len(pending)}`
+🎁 Unused Codes: `{unused}`
+
+Select an option below:"""
+    
+    await update.message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+async def generate_code(update, context):
     if update.effective_user.id != ADMIN_ID:
         return
     
     if not context.args:
-        await update.message.reply_text("Usage: /gencode AMOUNT")
+        await update.message.reply_text(
+            "❌ **Usage:** `/gencode AMOUNT`\n\nExample: `/gencode 100`",
+            parse_mode='Markdown'
+        )
         return
     
     amount = float(context.args[0])
-    code = generate_redeem_code(amount, ADMIN_ID)
-    await update.message.reply_text(f"✅ Code: {code}\nAmount: {amount} credits")
+    code = gen_code(amount, ADMIN_ID)
+    
+    await update.message.reply_text(
+        f"✅ **Code Generated!**\n\n"
+        f"🔑 Code: `{code}`\n"
+        f"💰 Amount: `{amount}` credits\n\n"
+        f"Share with users:\n`/redeem {code}`",
+        parse_mode='Markdown'
+    )
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stats(update, context):
     if update.effective_user.id != ADMIN_ID:
         return
     
-    total = get_total_users()
-    pending = len(get_pending_requests())
+    total = get_total()
+    pending = len(get_orders())
+    total_bal = get_total_balance()
+    unused = get_unused_codes()
     
-    await update.message.reply_text(f"📊 STATS\nUsers: {total}\nPending: {pending}")
+    await update.message.reply_text(
+        f"""📊 **BOT STATISTICS**
 
-async def pending_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+👥 Total Users: `{total}`
+💰 Total Balance: `{total_bal:.2f}` credits
+📦 Pending Orders: `{pending}`
+🎁 Unused Codes: `{unused}`
+
+📅 Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}""",
+        parse_mode='Markdown'
+    )
+
+async def pending_orders(update, context):
     if update.effective_user.id != ADMIN_ID:
         return
     
-    pending = get_pending_requests()
-    if not pending:
-        await update.message.reply_text("📦 No pending orders!")
+    orders = get_orders()
+    
+    if not orders:
+        await update.message.reply_text("📦 **No pending orders!**", parse_mode='Markdown')
         return
     
-    text = "📦 PENDING ORDERS\n\n"
-    for p in pending:
-        text += f"ID: {p[0]} | User: {p[1]} | Plan: {p[2]}\n"
+    text = "📦 **PENDING ORDERS**\n\n"
+    for o in orders:
+        text += f"🆔 Order: `{o[0]}`\n"
+        text += f"👤 User: `{o[1]}`\n"
+        text += f"📦 Plan: {o[2]}\n"
+        text += f"👤 Username: `{o[3]}`\n"
+        text += f"🔑 Password: `{o[4]}`\n"
+        text += "━━━━━━━━━━━━━━━━\n\n"
     
-    text += "\nConfirm: /confirm ORDER_ID"
-    await update.message.reply_text(text)
+    text += "To confirm: `/confirm ORDER_ID`"
+    
+    await update.message.reply_text(text, parse_mode='Markdown')
 
-async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def confirm_order(update, context):
     if update.effective_user.id != ADMIN_ID:
         return
     
     if not context.args:
-        await update.message.reply_text("Usage: /confirm ORDER_ID")
+        await update.message.reply_text(
+            "❌ **Usage:** `/confirm ORDER_ID`\n\nExample: `/confirm 1`",
+            parse_mode='Markdown'
+        )
         return
     
     order_id = int(context.args[0])
-    confirm_hosting_request(order_id)
     
-    await update.message.reply_text(f"✅ Order {order_id} confirmed!")
+    # Get user_id before confirming
+    conn = db()
+    c = conn.cursor()
+    c.execute('SELECT user_id FROM orders WHERE id = ? AND status = "pending"', (order_id,))
+    result = c.fetchone()
+    conn.close()
+    
+    if not result:
+        await update.message.reply_text("❌ Order not found or already confirmed!")
+        return
+    
+    user_id = result[0]
+    confirm_order(order_id)
+    
+    # Notify user
+    await context.bot.send_message(
+        user_id,
+        "🎉 **Your hosting is now ACTIVE!**\n\n"
+        "📌 Login: https://infinityfree.net/control-panel\n"
+        "🔑 Check your email for login credentials\n\n"
+        "Thank you for choosing us! 🚀",
+        parse_mode='Markdown'
+    )
+    
+    await update.message.reply_text(f"✅ **Order {order_id} confirmed!** User notified.")
 
-async def back(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await start(update, context)
+async def users_list(update, context):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    
+    conn = db()
+    c = conn.cursor()
+    c.execute('SELECT user_id, username, first_name, balance, referrals FROM users ORDER BY created_at DESC LIMIT 20')
+    users = c.fetchall()
+    conn.close()
+    
+    if not users:
+        await update.message.reply_text("No users yet!")
+        return
+    
+    text = "👥 **RECENT USERS**\n\n"
+    for u in users:
+        name = u[2] or u[1] or f"User {u[0]}"
+        text += f"• {name}\n"
+        text += f"  🆔 {u[0]} | 💰 {u[3]:.0f} | 👥 {u[4]}\n\n"
+    
+    await update.message.reply_text(text, parse_mode='Markdown')
 
 # ===== MAIN =====
-
 def main():
     app = Application.builder().token(TOKEN).build()
     
+    # Commands
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("redeem", redeem_command))
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("gencode", generate_code))
     app.add_handler(CommandHandler("confirm", confirm_order))
     
-    app.add_handler(CallbackQueryHandler(show_plans, pattern='plans'))
-    app.add_handler(CallbackQueryHandler(profile, pattern='profile'))
-    app.add_handler(CallbackQueryHandler(redeem, pattern='redeem'))
-    app.add_handler(CallbackQueryHandler(referral, pattern='referral'))
-    app.add_handler(CallbackQueryHandler(leaderboard, pattern='leaderboard'))
-    app.add_handler(CallbackQueryHandler(back, pattern='back'))
+    # Callbacks
+    app.add_handler(CallbackQueryHandler(show_plans, pattern='^plans$'))
+    app.add_handler(CallbackQueryHandler(profile, pattern='^profile$'))
+    app.add_handler(CallbackQueryHandler(redeem, pattern='^redeem$'))
+    app.add_handler(CallbackQueryHandler(referral, pattern='^referral$'))
+    app.add_handler(CallbackQueryHandler(leaderboard, pattern='^leaderboard$'))
+    app.add_handler(CallbackQueryHandler(support, pattern='^support$'))
+    app.add_handler(CallbackQueryHandler(back, pattern='^back$'))
+    app.add_handler(CallbackQueryHandler(copy_link, pattern='^copy_link$'))
     app.add_handler(CallbackQueryHandler(buy_plan, pattern='^buy_'))
-    app.add_handler(CallbackQueryHandler(stats, pattern='stats'))
-    app.add_handler(CallbackQueryHandler(pending_orders, pattern='pending'))
-    app.add_handler(CallbackQueryHandler(generate_code, pattern='gen_code'))
+    app.add_handler(CallbackQueryHandler(stats, pattern='^stats$'))
+    app.add_handler(CallbackQueryHandler(pending_orders, pattern='^pending$'))
+    app.add_handler(CallbackQueryHandler(users_list, pattern='^users$'))
+    app.add_handler(CallbackQueryHandler(generate_code, pattern='^gen_code$'))
     
-    print("🤖 Bot is running!")
+    print("🤖 Premium Hosting Bot is running!")
     app.run_polling()
 
 if __name__ == "__main__":
