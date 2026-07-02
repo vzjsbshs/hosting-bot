@@ -3,6 +3,7 @@ import sqlite3
 import random
 import string
 import logging
+import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -20,11 +21,14 @@ print("✅ Bot starting...")
 # ===== DATABASE =====
 DB = 'bot.db'
 
-def db():
-    return sqlite3.connect(DB, check_same_thread=False)
+def get_db():
+    """Get database connection with proper timeout"""
+    conn = sqlite3.connect(DB, timeout=30, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def init():
-    conn = db()
+    conn = get_db()
     c = conn.cursor()
     
     c.execute('DROP TABLE IF EXISTS users')
@@ -66,20 +70,22 @@ init()
 
 def get_user(uid):
     try:
-        conn = db()
+        conn = get_db()
         c = conn.cursor()
         c.execute('SELECT * FROM users WHERE user_id = ?', (uid,))
         r = c.fetchone()
         conn.close()
         if r:
-            return (r[0], r[1], r[2], float(r[3]) if r[3] else 0, r[4], r[5], r[6])
+            return dict(r)
         return None
-    except:
+    except Exception as e:
+        print(f"❌ Error getting user: {e}")
         return None
 
 def add_user(uid, username, first_name, ref=0):
+    conn = None
     try:
-        conn = db()
+        conn = get_db()
         c = conn.cursor()
         
         c.execute('SELECT * FROM users WHERE user_id = ?', (uid,))
@@ -103,65 +109,85 @@ def add_user(uid, username, first_name, ref=0):
         conn.close()
         return True
     except Exception as e:
+        if conn:
+            conn.close()
         print(f"❌ Error in add_user: {e}")
         return False
 
 def update_balance(uid, amt):
+    conn = None
     try:
-        conn = db()
+        conn = get_db()
         c = conn.cursor()
         c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (float(amt), uid))
         conn.commit()
         conn.close()
         return True
     except Exception as e:
+        if conn:
+            conn.close()
         print(f"❌ Error updating balance: {e}")
         return False
 
 def get_refs(uid):
     try:
-        conn = db()
+        conn = get_db()
         c = conn.cursor()
         c.execute('SELECT COUNT(*) FROM users WHERE referred_by = ?', (uid,))
         r = c.fetchone()[0]
         conn.close()
         return r
-    except:
+    except Exception as e:
+        print(f"❌ Error getting refs: {e}")
         return 0
 
 def gen_code(amt, created_by):
     try:
-        conn = db()
+        conn = get_db()
         c = conn.cursor()
         code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
         c.execute('INSERT INTO codes (code, amount, created_by) VALUES (?, ?, ?)', (code, float(amt), created_by))
         conn.commit()
         conn.close()
         return code
-    except:
+    except Exception as e:
+        print(f"❌ Error generating code: {e}")
         return None
 
 def use_code(code, uid):
+    conn = None
     try:
-        conn = db()
+        conn = get_db()
         c = conn.cursor()
+        
+        # Check code
         c.execute('SELECT * FROM codes WHERE code = ? AND used = 0', (code,))
         r = c.fetchone()
-        if r:
-            amount = float(r[1])
-            c.execute('UPDATE codes SET used = 1 WHERE code = ?', (code,))
-            c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amount, uid))
-            conn.commit()
+        
+        if not r:
             conn.close()
-            return True, amount
+            return False, 0
+        
+        amount = float(r[1])
+        
+        # Update code
+        c.execute('UPDATE codes SET used = 1 WHERE code = ?', (code,))
+        
+        # Update balance
+        c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amount, uid))
+        
+        conn.commit()
         conn.close()
-        return False, 0
-    except:
+        return True, amount
+    except Exception as e:
+        if conn:
+            conn.close()
+        print(f"❌ Error using code: {e}")
         return False, 0
 
 def add_order(uid, plan):
     try:
-        conn = db()
+        conn = get_db()
         c = conn.cursor()
         username = f"user_{uid}_{random.randint(100,999)}"
         password = ''.join(random.choices(string.ascii_letters + string.digits, k=12))
@@ -170,73 +196,80 @@ def add_order(uid, plan):
         conn.commit()
         conn.close()
         return username, password
-    except:
+    except Exception as e:
+        print(f"❌ Error adding order: {e}")
         return None, None
 
 def get_orders():
     try:
-        conn = db()
+        conn = get_db()
         c = conn.cursor()
         c.execute('SELECT * FROM orders WHERE status = "pending"')
         r = c.fetchall()
         conn.close()
         return r
-    except:
+    except Exception as e:
+        print(f"❌ Error getting orders: {e}")
         return []
 
 def confirm_order(oid):
     try:
-        conn = db()
+        conn = get_db()
         c = conn.cursor()
         c.execute('UPDATE orders SET status = "active" WHERE id = ?', (oid,))
         conn.commit()
         conn.close()
         return True
-    except:
+    except Exception as e:
+        print(f"❌ Error confirming order: {e}")
         return False
 
 def get_total():
     try:
-        conn = db()
+        conn = get_db()
         c = conn.cursor()
         c.execute('SELECT COUNT(*) FROM users')
         r = c.fetchone()[0]
         conn.close()
         return r
-    except:
+    except Exception as e:
+        print(f"❌ Error getting total: {e}")
         return 0
 
 def get_top_users(limit=10):
     try:
-        conn = db()
+        conn = get_db()
         c = conn.cursor()
         c.execute('SELECT user_id, username, referrals, balance FROM users ORDER BY referrals DESC LIMIT ?', (limit,))
         r = c.fetchall()
         conn.close()
         return r
-    except:
+    except Exception as e:
+        print(f"❌ Error getting top users: {e}")
         return []
 
 def get_total_balance():
     try:
-        conn = db()
+        conn = get_db()
         c = conn.cursor()
         c.execute('SELECT SUM(balance) FROM users')
         r = c.fetchone()[0] or 0
         conn.close()
         return r
-    except:
+    except Exception as e:
+        print(f"❌ Error getting total balance: {e}")
         return 0
 
 def get_unused_codes():
     try:
-        conn = db()
+        conn = get_db()
         c = conn.cursor()
         c.execute('SELECT COUNT(*) FROM codes WHERE used = 0')
         r = c.fetchone()[0]
         conn.close()
         return r
-    except:
+    except Exception as e:
+        print(f"❌ Error getting unused codes: {e}")
         return 0
 
 # ===== PLANS =====
@@ -261,7 +294,7 @@ async def show_main_menu(update, context):
         
         user = get_user(uid)
         if user:
-            balance = float(user[3]) if user[3] else 0
+            balance = float(user['balance']) if user['balance'] else 0
         else:
             balance = 0
         
@@ -313,13 +346,13 @@ async def start(update, context):
             try:
                 referrer = get_user(int(ref))
                 if referrer:
-                    balance = float(referrer[3]) if referrer[3] else 0
+                    balance = float(referrer['balance']) if referrer['balance'] else 0
                     await context.bot.send_message(
                         int(ref),
                         f"🎉 New referral! @{username} joined!\n✅ +15 credits!\n💰 Balance: {balance:.2f}"
                     )
-            except:
-                pass
+            except Exception as e:
+                print(f"❌ Error notifying referrer: {e}")
         
         await show_main_menu(update, context)
     except Exception as e:
@@ -365,7 +398,7 @@ async def buy_plan(update, context):
             await query.edit_message_text("❌ Please /start first!")
             return
         
-        balance = float(user[3]) if user[3] else 0
+        balance = float(user['balance']) if user['balance'] else 0
         
         if balance < plan['price']:
             await query.edit_message_text(f"❌ Need {plan['price']}, have {balance:.2f}")
@@ -395,7 +428,7 @@ async def profile(update, context):
             return
         
         refs = get_refs(uid)
-        balance = float(user[3]) if user[3] else 0
+        balance = float(user['balance']) if user['balance'] else 0
         keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
         await query.edit_message_text(
             f"👤 PROFILE\n\nID: {uid}\nBalance: {balance:.2f}\nReferrals: {refs}",
@@ -420,28 +453,24 @@ async def redeem_command(update, context):
         code = context.args[0].upper()
         uid = update.effective_user.id
         
-        # Check if code exists
-        conn = db()
-        c = conn.cursor()
-        c.execute('SELECT * FROM codes WHERE code = ? AND used = 0', (code,))
-        result = c.fetchone()
-        conn.close()
-        
-        if not result:
-            await update.message.reply_text("❌ Invalid or already used code!")
+        # Check if user exists
+        user = get_user(uid)
+        if not user:
+            await update.message.reply_text("❌ Please /start first!")
             return
         
         # Use the code
         success, amount = use_code(code, uid)
         
         if success:
+            # Get updated balance
             user = get_user(uid)
-            balance = float(user[3]) if user[3] else 0
+            balance = float(user['balance']) if user['balance'] else 0
             await update.message.reply_text(
                 f"✅ +{amount} credits!\n💰 Balance: {balance:.2f}\n\n💡 Buy hosting from the PLANS menu!"
             )
         else:
-            await update.message.reply_text("❌ Error redeeming code!")
+            await update.message.reply_text("❌ Invalid or already used code!")
     except Exception as e:
         print(f"❌ Error in redeem: {e}")
         await update.message.reply_text("❌ Error! Please try again.")
@@ -570,7 +599,7 @@ async def confirm_order_cmd(update, context):
         return
     try:
         order_id = int(context.args[0])
-        conn = db()
+        conn = get_db()
         c = conn.cursor()
         c.execute('SELECT user_id FROM orders WHERE id = ? AND status = "pending"', (order_id,))
         result = c.fetchone()
