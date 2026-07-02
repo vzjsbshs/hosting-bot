@@ -1,2 +1,0 @@
-# hosting-bot
-Free hosting
