@@ -81,8 +81,10 @@ def add_user(uid, username, first_name, ref=0):
     try:
         conn = db()
         c = conn.cursor()
+        
         c.execute('SELECT * FROM users WHERE user_id = ?', (uid,))
         existing = c.fetchone()
+        
         if existing:
             conn.close()
             return False
@@ -146,9 +148,9 @@ def use_code(code, uid):
         c.execute('SELECT * FROM codes WHERE code = ? AND used = 0', (code,))
         r = c.fetchone()
         if r:
-            c.execute('UPDATE codes SET used = 1 WHERE code = ?', (code,))
             amount = float(r[1])
-            update_balance(uid, amount)
+            c.execute('UPDATE codes SET used = 1 WHERE code = ?', (code,))
+            c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amount, uid))
             conn.commit()
             conn.close()
             return True, amount
@@ -305,9 +307,9 @@ async def start(update, context):
             await show_main_menu(update, context)
             return
         
-        is_new = add_user(uid, username, first_name, int(ref) if ref else 0)
+        add_user(uid, username, first_name, int(ref) if ref else 0)
         
-        if ref and is_new:
+        if ref:
             try:
                 referrer = get_user(int(ref))
                 if referrer:
@@ -417,6 +419,19 @@ async def redeem_command(update, context):
         
         code = context.args[0].upper()
         uid = update.effective_user.id
+        
+        # Check if code exists
+        conn = db()
+        c = conn.cursor()
+        c.execute('SELECT * FROM codes WHERE code = ? AND used = 0', (code,))
+        result = c.fetchone()
+        conn.close()
+        
+        if not result:
+            await update.message.reply_text("❌ Invalid or already used code!")
+            return
+        
+        # Use the code
         success, amount = use_code(code, uid)
         
         if success:
@@ -426,7 +441,7 @@ async def redeem_command(update, context):
                 f"✅ +{amount} credits!\n💰 Balance: {balance:.2f}\n\n💡 Buy hosting from the PLANS menu!"
             )
         else:
-            await update.message.reply_text("❌ Invalid or already used code!")
+            await update.message.reply_text("❌ Error redeeming code!")
     except Exception as e:
         print(f"❌ Error in redeem: {e}")
         await update.message.reply_text("❌ Error! Please try again.")
