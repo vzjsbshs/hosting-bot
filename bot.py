@@ -11,14 +11,23 @@ TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID = int(os.environ.get('ADMIN_ID', '0'))
 
 if not TOKEN:
-    print("ERROR: BOT_TOKEN not set!")
+    print("❌ ERROR: BOT_TOKEN not set!")
     exit(1)
 
 if not ADMIN_ID:
-    print("ERROR: ADMIN_ID not set!")
+    print("❌ ERROR: ADMIN_ID not set!")
     exit(1)
 
-logging.basicConfig(level=logging.INFO)
+# Enable logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+print("✅ Bot starting...")
+print(f"✅ Token: {TOKEN[:10]}...")
+print(f"✅ Admin ID: {ADMIN_ID}")
 
 # ===== DATABASE =====
 DB = 'bot.db'
@@ -56,7 +65,7 @@ def init():
     )''')
     conn.commit()
     conn.close()
-    print("Database initialized!")
+    print("✅ Database initialized!")
 
 init()
 
@@ -196,6 +205,8 @@ PLANS = {
 # ===== BOT HANDLERS =====
 
 async def start(update, context):
+    logger.info(f"✅ /start received from user {update.effective_user.id}")
+    
     uid = update.effective_user.id
     username = update.effective_user.username or ""
     first_name = update.effective_user.first_name or "User"
@@ -205,7 +216,7 @@ async def start(update, context):
     
     if ref:
         try:
-            await context.bot.send_message(int(ref), f" New referral! +15 credits!")
+            await context.bot.send_message(int(ref), f"🎉 New referral! +15 credits!")
         except:
             pass
     
@@ -215,21 +226,22 @@ async def start(update, context):
     balance_str = f"{balance:.2f}"
     
     keyboard = [
-        [InlineKeyboardButton(" HOSTING PLANS", callback_data='plans')],
-        [InlineKeyboardButton(" MY PROFILE", callback_data='profile'), InlineKeyboardButton(" REDEEM", callback_data='redeem')],
-        [InlineKeyboardButton(" REFERRAL", callback_data='referral'), InlineKeyboardButton(" LEADERBOARD", callback_data='leaderboard')],
-        [InlineKeyboardButton(" SUPPORT", callback_data='support')]
+        [InlineKeyboardButton("🌐 HOSTING PLANS", callback_data='plans')],
+        [InlineKeyboardButton("👤 PROFILE", callback_data='profile'), InlineKeyboardButton("🎁 REDEEM", callback_data='redeem')],
+        [InlineKeyboardButton("👥 REFERRAL", callback_data='referral'), InlineKeyboardButton("🏆 LEADERBOARD", callback_data='leaderboard')],
+        [InlineKeyboardButton("📊 SUPPORT", callback_data='support')]
     ]
     
-    text = f""" Welcome to Premium Hosting Bot!
+    text = f"""✨ Welcome to Premium Hosting Bot!
 
- User ID: {uid}
- Balance: {balance_str} credits
- Referrals: {refs}
+👤 User ID: {uid}
+💰 Balance: {balance_str} credits
+👥 Referrals: {refs}
 
 Select an option below:"""
     
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    logger.info(f"✅ Response sent to user {uid}")
 
 async def menu(update, context):
     await start(update, context)
@@ -242,15 +254,16 @@ async def back(update, context):
 async def show_plans(update, context):
     query = update.callback_query
     await query.answer()
+    logger.info(f"✅ Plans requested by {query.from_user.id}")
     
-    text = " HOSTING PLANS\n\n"
+    text = "🌐 HOSTING PLANS\n\n"
     keyboard = []
     
     for k, v in PLANS.items():
         text += f"{v['name']} - {v['price']} credits\n"
         keyboard.append([InlineKeyboardButton(f"Buy {v['name']}", callback_data=f'buy_{k}')])
     
-    keyboard.append([InlineKeyboardButton(" BACK", callback_data='back')])
+    keyboard.append([InlineKeyboardButton("⬅️ BACK", callback_data='back')])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def buy_plan(update, context):
@@ -263,12 +276,12 @@ async def buy_plan(update, context):
     user = get_user(uid)
     
     if not user:
-        await query.edit_message_text(" Please /start first!")
+        await query.edit_message_text("❌ Please /start first!")
         return
     
     if user[2] < plan['price']:
         balance_str = f"{user[2]:.2f}"
-        await query.edit_message_text(f" Need {plan['price']}, have {balance_str}")
+        await query.edit_message_text(f"❌ Need {plan['price']}, have {balance_str}")
         return
     
     update_balance(uid, -plan['price'])
@@ -276,10 +289,10 @@ async def buy_plan(update, context):
     
     await context.bot.send_message(
         ADMIN_ID,
-        f" NEW ORDER!\nUser: {uid}\nPlan: {plan['name']}\nUsername: {username}\nPassword: {password}"
+        f"🔔 NEW ORDER!\nUser: {uid}\nPlan: {plan['name']}\nUsername: {username}\nPassword: {password}"
     )
     
-    await query.edit_message_text(f" {plan['name']} purchased! Admin will activate within 24h.")
+    await query.edit_message_text(f"✅ {plan['name']} purchased! Admin will activate within 24h.")
 
 async def profile(update, context):
     query = update.callback_query
@@ -289,28 +302,28 @@ async def profile(update, context):
     user = get_user(uid)
     
     if not user:
-        await query.edit_message_text(" Please /start first!")
+        await query.edit_message_text("❌ Please /start first!")
         return
     
     refs = get_refs(uid)
     balance_str = f"{user[2]:.2f}"
     
     await query.edit_message_text(
-        f" PROFILE\n\nID: {uid}\nBalance: {balance_str}\nReferrals: {refs}",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(" BACK", callback_data='back')]])
+        f"👤 PROFILE\n\nID: {uid}\nBalance: {balance_str}\nReferrals: {refs}",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BACK", callback_data='back')]])
     )
 
 async def redeem(update, context):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        " REDEEM\n\nSend: /redeem CODE",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(" BACK", callback_data='back')]])
+        "🎁 REDEEM\n\nSend: /redeem CODE",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BACK", callback_data='back')]])
     )
 
 async def redeem_command(update, context):
     if not context.args:
-        await update.message.reply_text(" Usage: /redeem CODE")
+        await update.message.reply_text("❌ Usage: /redeem CODE")
         return
     
     code = context.args[0].upper()
@@ -320,9 +333,9 @@ async def redeem_command(update, context):
     if success:
         user = get_user(uid)
         balance_str = f"{user[2]:.2f}"
-        await update.message.reply_text(f" +{amount} credits! Balance: {balance_str}")
+        await update.message.reply_text(f"✅ +{amount} credits! Balance: {balance_str}")
     else:
-        await update.message.reply_text(" Invalid code!")
+        await update.message.reply_text("❌ Invalid code!")
 
 async def referral(update, context):
     query = update.callback_query
@@ -333,8 +346,8 @@ async def referral(update, context):
     refs = get_refs(uid)
     
     await query.edit_message_text(
-        f" REFERRAL\n\nLink: {link}\nReferrals: {refs}\n\n15 credits each",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(" BACK", callback_data='back')]])
+        f"👥 REFERRAL\n\nLink: {link}\nReferrals: {refs}\n\n15 credits each",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BACK", callback_data='back')]])
     )
 
 async def leaderboard(update, context):
@@ -342,30 +355,30 @@ async def leaderboard(update, context):
     await query.answer()
     
     top = get_top_users(10)
-    text = " TOP REFERRERS\n\n"
+    text = "🏆 TOP REFERRERS\n\n"
     
     if not top:
-        text += "No users yet! Be the first! "
+        text += "No users yet! Be the first! 🚀"
     else:
         for i, u in enumerate(top, 1):
-            medal = ["", "", ""][i-1] if i <= 3 else f"{i}."
+            medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"{i}."
             name = f"@{u[1]}" if u[1] else f"User {u[0]}"
             text += f"{medal} {name} - {u[2]} referrals\n"
     
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(" BACK", callback_data='back')]]))
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]))
 
 async def support(update, context):
     query = update.callback_query
     await query.answer()
     
-    text = """ SUPPORT
+    text = """📊 SUPPORT
 
- How to earn?
+❓ How to earn?
 1. Refer friends → 15 credits
 2. Every 5 referrals → 25 bonus
 3. Redeem codes
 
- How to get hosting?
+❓ How to get hosting?
 1. Earn 50+ credits
 2. Buy a plan
 3. Admin creates hosting
@@ -375,25 +388,25 @@ Commands:
 /menu - Show menu
 /redeem - Redeem code"""
     
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(" BACK", callback_data='back')]]))
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]))
 
 # ===== ADMIN =====
 
 async def admin_panel(update, context):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text(" Unauthorized!")
+        await update.message.reply_text("❌ Unauthorized!")
         return
     
     pending = get_orders()
     total = get_total()
     
     keyboard = [
-        [InlineKeyboardButton(" Generate Code", callback_data='gen_code')],
-        [InlineKeyboardButton(" Stats", callback_data='stats')],
-        [InlineKeyboardButton(" Orders", callback_data='pending')]
+        [InlineKeyboardButton("🔑 Generate Code", callback_data='gen_code')],
+        [InlineKeyboardButton("📊 Stats", callback_data='stats')],
+        [InlineKeyboardButton("📦 Orders", callback_data='pending')]
     ]
     
-    await update.message.reply_text(f" ADMIN\nUsers: {total}\nPending: {len(pending)}", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(f"🛠️ ADMIN\nUsers: {total}\nPending: {len(pending)}", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def admin_gen_code(update, context):
     query = update.callback_query
@@ -410,7 +423,7 @@ async def admin_stats(update, context):
     unused = get_unused_codes()
     balance_str = f"{total_bal:.2f}"
     
-    await query.edit_message_text(f" STATS\nUsers: {total}\nPending: {pending}\nBalance: {balance_str}\nUnused Codes: {unused}")
+    await query.edit_message_text(f"📊 STATS\nUsers: {total}\nPending: {pending}\nBalance: {balance_str}\nUnused Codes: {unused}")
 
 async def admin_pending(update, context):
     query = update.callback_query
@@ -421,7 +434,7 @@ async def admin_pending(update, context):
         await query.edit_message_text("No orders")
         return
     
-    text = " ORDERS\n\n"
+    text = "📦 ORDERS\n\n"
     for o in orders:
         text += f"ID: {o[0]} | User: {o[1]} | {o[2]}\n"
     text += "\nConfirm: /confirm ID"
@@ -437,7 +450,7 @@ async def generate_code(update, context):
     
     amount = float(context.args[0])
     code = gen_code(amount, ADMIN_ID)
-    await update.message.reply_text(f" Code: {code}\nAmount: {amount}")
+    await update.message.reply_text(f"✅ Code: {code}\nAmount: {amount}")
 
 async def confirm_order_cmd(update, context):
     if update.effective_user.id != ADMIN_ID:
@@ -459,35 +472,45 @@ async def confirm_order_cmd(update, context):
         return
     
     confirm_order(order_id)
-    await context.bot.send_message(result[0], " Your hosting is now active!")
-    await update.message.reply_text(f" Order {order_id} confirmed!")
+    await context.bot.send_message(result[0], "🎉 Your hosting is now active!")
+    await update.message.reply_text(f"✅ Order {order_id} confirmed!")
 
 # ===== MAIN =====
 def main():
-    print(" Starting bot...")
-    app = Application.builder().token(TOKEN).build()
+    print("🚀 Starting bot...")
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("menu", menu))
-    app.add_handler(CommandHandler("redeem", redeem_command))
-    app.add_handler(CommandHandler("admin", admin_panel))
-    app.add_handler(CommandHandler("gencode", generate_code))
-    app.add_handler(CommandHandler("confirm", confirm_order_cmd))
-    
-    app.add_handler(CallbackQueryHandler(show_plans, pattern='^plans$'))
-    app.add_handler(CallbackQueryHandler(profile, pattern='^profile$'))
-    app.add_handler(CallbackQueryHandler(redeem, pattern='^redeem$'))
-    app.add_handler(CallbackQueryHandler(referral, pattern='^referral$'))
-    app.add_handler(CallbackQueryHandler(leaderboard, pattern='^leaderboard$'))
-    app.add_handler(CallbackQueryHandler(support, pattern='^support$'))
-    app.add_handler(CallbackQueryHandler(back, pattern='^back$'))
-    app.add_handler(CallbackQueryHandler(buy_plan, pattern='^buy_'))
-    app.add_handler(CallbackQueryHandler(admin_gen_code, pattern='^gen_code$'))
-    app.add_handler(CallbackQueryHandler(admin_stats, pattern='^stats$'))
-    app.add_handler(CallbackQueryHandler(admin_pending, pattern='^pending$'))
-    
-    print(" Bot is running!")
-    app.run_polling()
+    try:
+        app = Application.builder().token(TOKEN).build()
+        print("✅ Application built successfully!")
+        
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("menu", menu))
+        app.add_handler(CommandHandler("redeem", redeem_command))
+        app.add_handler(CommandHandler("admin", admin_panel))
+        app.add_handler(CommandHandler("gencode", generate_code))
+        app.add_handler(CommandHandler("confirm", confirm_order_cmd))
+        
+        app.add_handler(CallbackQueryHandler(show_plans, pattern='^plans$'))
+        app.add_handler(CallbackQueryHandler(profile, pattern='^profile$'))
+        app.add_handler(CallbackQueryHandler(redeem, pattern='^redeem$'))
+        app.add_handler(CallbackQueryHandler(referral, pattern='^referral$'))
+        app.add_handler(CallbackQueryHandler(leaderboard, pattern='^leaderboard$'))
+        app.add_handler(CallbackQueryHandler(support, pattern='^support$'))
+        app.add_handler(CallbackQueryHandler(back, pattern='^back$'))
+        app.add_handler(CallbackQueryHandler(buy_plan, pattern='^buy_'))
+        app.add_handler(CallbackQueryHandler(admin_gen_code, pattern='^gen_code$'))
+        app.add_handler(CallbackQueryHandler(admin_stats, pattern='^stats$'))
+        app.add_handler(CallbackQueryHandler(admin_pending, pattern='^pending$'))
+        
+        print("✅ Handlers registered!")
+        print("🤖 Bot is polling for updates...")
+        
+        app.run_polling()
+        
+    except Exception as e:
+        print(f"❌ ERROR: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
