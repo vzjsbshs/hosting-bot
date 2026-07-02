@@ -27,12 +27,10 @@ def init():
     conn = db()
     c = conn.cursor()
     
-    # COMPLETELY RESET DATABASE
     c.execute('DROP TABLE IF EXISTS users')
     c.execute('DROP TABLE IF EXISTS codes')
     c.execute('DROP TABLE IF EXISTS orders')
     
-    # Create fresh tables with proper data types
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
@@ -60,7 +58,7 @@ def init():
     )''')
     conn.commit()
     conn.close()
-    print("✅ Database reset and initialized!")
+    print("✅ Database initialized!")
 
 init()
 
@@ -74,11 +72,9 @@ def get_user(uid):
         r = c.fetchone()
         conn.close()
         if r:
-            # Ensure balance is float
             return (r[0], r[1], r[2], float(r[3]) if r[3] else 0, r[4], r[5], r[6])
         return None
-    except Exception as e:
-        print(f"❌ Error getting user: {e}")
+    except:
         return None
 
 def add_user(uid, username, first_name, ref=0):
@@ -95,7 +91,6 @@ def add_user(uid, username, first_name, ref=0):
                   (uid, username, first_name, ref))
         
         if ref and ref != uid:
-            # Add referral bonus
             c.execute('UPDATE users SET balance = balance + 15, referrals = referrals + 1 WHERE user_id = ?', (ref,))
             c.execute('SELECT referrals FROM users WHERE user_id = ?', (ref,))
             count = c.fetchone()[0]
@@ -116,6 +111,11 @@ def update_balance(uid, amt):
         c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (float(amt), uid))
         conn.commit()
         conn.close()
+        
+        # Verify balance
+        user = get_user(uid)
+        if user:
+            print(f"✅ New balance for {uid}: {user[3]}")
         return True
     except Exception as e:
         print(f"❌ Error updating balance: {e}")
@@ -152,10 +152,11 @@ def use_code(code, uid):
         r = c.fetchone()
         if r:
             c.execute('UPDATE codes SET used = 1 WHERE code = ?', (code,))
-            update_balance(uid, r[1])
+            amount = float(r[1])
+            update_balance(uid, amount)
             conn.commit()
             conn.close()
-            return True, r[1]
+            return True, amount
         conn.close()
         return False, 0
     except:
@@ -421,16 +422,32 @@ async def redeem_command(update, context):
         
         code = context.args[0].upper()
         uid = update.effective_user.id
+        
+        # Check if code exists and is unused
+        conn = db()
+        c = conn.cursor()
+        c.execute('SELECT * FROM codes WHERE code = ? AND used = 0', (code,))
+        result = c.fetchone()
+        conn.close()
+        
+        if not result:
+            await update.message.reply_text("❌ Invalid or already used code!")
+            return
+        
         success, amount = use_code(code, uid)
         
         if success:
             user = get_user(uid)
             balance = float(user[3]) if user[3] else 0
-            await update.message.reply_text(f"✅ +{amount} credits!\n💰 Balance: {balance:.2f}")
+            await update.message.reply_text(
+                f"✅ +{amount} credits!\n💰 Balance: {balance:.2f}\n\n"
+                f"💡 Buy hosting from the PLANS menu!"
+            )
         else:
-            await update.message.reply_text("❌ Invalid code!")
+            await update.message.reply_text("❌ Error redeeming code!")
     except Exception as e:
         print(f"❌ Error in redeem: {e}")
+        await update.message.reply_text("❌ Error! Please try again.")
 
 # ===== REFERRAL =====
 async def referral(update, context):
