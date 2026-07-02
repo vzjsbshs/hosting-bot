@@ -10,24 +10,12 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID = int(os.environ.get('ADMIN_ID', '0'))
 
-if not TOKEN:
-    print("❌ ERROR: BOT_TOKEN not set!")
+if not TOKEN or not ADMIN_ID:
+    print("❌ Missing BOT_TOKEN or ADMIN_ID")
     exit(1)
 
-if not ADMIN_ID:
-    print("❌ ERROR: ADMIN_ID not set!")
-    exit(1)
-
-# Enable logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
+logging.basicConfig(level=logging.INFO)
 print("✅ Bot starting...")
-print(f"✅ Token: {TOKEN[:10]}...")
-print(f"✅ Admin ID: {ADMIN_ID}")
 
 # ===== DATABASE =====
 DB = 'bot.db'
@@ -196,16 +184,15 @@ def get_unused_codes():
 
 # ===== PLANS =====
 PLANS = {
-    'starter': {'name': 'Starter', 'price': 50},
-    'pro': {'name': 'Pro', 'price': 100},
-    'business': {'name': 'Business', 'price': 200},
-    'enterprise': {'name': 'Enterprise', 'price': 500}
+    'starter': {'name': '🌱 Starter', 'price': 50},
+    'pro': {'name': '🚀 Pro', 'price': 100},
+    'business': {'name': '💼 Business', 'price': 200},
+    'enterprise': {'name': '🏢 Enterprise', 'price': 500}
 }
 
-# ===== BOT HANDLERS =====
-
+# ===== START COMMAND =====
 async def start(update, context):
-    logger.info(f"✅ /start received from user {update.effective_user.id}")
+    print(f"✅ /start received from {update.effective_user.id}")
     
     uid = update.effective_user.id
     username = update.effective_user.username or ""
@@ -241,20 +228,22 @@ async def start(update, context):
 Select an option below:"""
     
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-    logger.info(f"✅ Response sent to user {uid}")
+    print(f"✅ Response sent to {uid}")
 
+# ===== MENU COMMAND =====
 async def menu(update, context):
     await start(update, context)
 
+# ===== BACK BUTTON =====
 async def back(update, context):
     query = update.callback_query
     await query.answer()
     await start(update, context)
 
+# ===== PLANS =====
 async def show_plans(update, context):
     query = update.callback_query
     await query.answer()
-    logger.info(f"✅ Plans requested by {query.from_user.id}")
     
     text = "🌐 HOSTING PLANS\n\n"
     keyboard = []
@@ -266,6 +255,7 @@ async def show_plans(update, context):
     keyboard.append([InlineKeyboardButton("⬅️ BACK", callback_data='back')])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
+# ===== BUY PLAN =====
 async def buy_plan(update, context):
     query = update.callback_query
     await query.answer()
@@ -294,6 +284,7 @@ async def buy_plan(update, context):
     
     await query.edit_message_text(f"✅ {plan['name']} purchased! Admin will activate within 24h.")
 
+# ===== PROFILE =====
 async def profile(update, context):
     query = update.callback_query
     await query.answer()
@@ -313,6 +304,7 @@ async def profile(update, context):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BACK", callback_data='back')]])
     )
 
+# ===== REDEEM =====
 async def redeem(update, context):
     query = update.callback_query
     await query.answer()
@@ -337,6 +329,7 @@ async def redeem_command(update, context):
     else:
         await update.message.reply_text("❌ Invalid code!")
 
+# ===== REFERRAL =====
 async def referral(update, context):
     query = update.callback_query
     await query.answer()
@@ -350,6 +343,7 @@ async def referral(update, context):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BACK", callback_data='back')]])
     )
 
+# ===== LEADERBOARD =====
 async def leaderboard(update, context):
     query = update.callback_query
     await query.answer()
@@ -361,12 +355,16 @@ async def leaderboard(update, context):
         text += "No users yet! Be the first! 🚀"
     else:
         for i, u in enumerate(top, 1):
-            medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"{i}."
+            if i <= 3:
+                medal = ["🥇", "🥈", "🥉"][i-1]
+            else:
+                medal = f"{i}."
             name = f"@{u[1]}" if u[1] else f"User {u[0]}"
             text += f"{medal} {name} - {u[2]} referrals\n"
     
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]))
 
+# ===== SUPPORT =====
 async def support(update, context):
     query = update.callback_query
     await query.answer()
@@ -391,7 +389,6 @@ Commands:
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]))
 
 # ===== ADMIN =====
-
 async def admin_panel(update, context):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Unauthorized!")
@@ -478,39 +475,31 @@ async def confirm_order_cmd(update, context):
 # ===== MAIN =====
 def main():
     print("🚀 Starting bot...")
+    app = Application.builder().token(TOKEN).build()
     
-    try:
-        app = Application.builder().token(TOKEN).build()
-        print("✅ Application built successfully!")
-        
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("menu", menu))
-        app.add_handler(CommandHandler("redeem", redeem_command))
-        app.add_handler(CommandHandler("admin", admin_panel))
-        app.add_handler(CommandHandler("gencode", generate_code))
-        app.add_handler(CommandHandler("confirm", confirm_order_cmd))
-        
-        app.add_handler(CallbackQueryHandler(show_plans, pattern='^plans$'))
-        app.add_handler(CallbackQueryHandler(profile, pattern='^profile$'))
-        app.add_handler(CallbackQueryHandler(redeem, pattern='^redeem$'))
-        app.add_handler(CallbackQueryHandler(referral, pattern='^referral$'))
-        app.add_handler(CallbackQueryHandler(leaderboard, pattern='^leaderboard$'))
-        app.add_handler(CallbackQueryHandler(support, pattern='^support$'))
-        app.add_handler(CallbackQueryHandler(back, pattern='^back$'))
-        app.add_handler(CallbackQueryHandler(buy_plan, pattern='^buy_'))
-        app.add_handler(CallbackQueryHandler(admin_gen_code, pattern='^gen_code$'))
-        app.add_handler(CallbackQueryHandler(admin_stats, pattern='^stats$'))
-        app.add_handler(CallbackQueryHandler(admin_pending, pattern='^pending$'))
-        
-        print("✅ Handlers registered!")
-        print("🤖 Bot is polling for updates...")
-        
-        app.run_polling()
-        
-    except Exception as e:
-        print(f"❌ ERROR: {e}")
-        import traceback
-        traceback.print_exc()
+    # Commands
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", menu))
+    app.add_handler(CommandHandler("redeem", redeem_command))
+    app.add_handler(CommandHandler("admin", admin_panel))
+    app.add_handler(CommandHandler("gencode", generate_code))
+    app.add_handler(CommandHandler("confirm", confirm_order_cmd))
+    
+    # Callbacks
+    app.add_handler(CallbackQueryHandler(show_plans, pattern='^plans$'))
+    app.add_handler(CallbackQueryHandler(profile, pattern='^profile$'))
+    app.add_handler(CallbackQueryHandler(redeem, pattern='^redeem$'))
+    app.add_handler(CallbackQueryHandler(referral, pattern='^referral$'))
+    app.add_handler(CallbackQueryHandler(leaderboard, pattern='^leaderboard$'))
+    app.add_handler(CallbackQueryHandler(support, pattern='^support$'))
+    app.add_handler(CallbackQueryHandler(back, pattern='^back$'))
+    app.add_handler(CallbackQueryHandler(buy_plan, pattern='^buy_'))
+    app.add_handler(CallbackQueryHandler(admin_gen_code, pattern='^gen_code$'))
+    app.add_handler(CallbackQueryHandler(admin_stats, pattern='^stats$'))
+    app.add_handler(CallbackQueryHandler(admin_pending, pattern='^pending$'))
+    
+    print("🤖 Bot is running!")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
