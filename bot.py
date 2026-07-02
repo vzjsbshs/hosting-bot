@@ -9,6 +9,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 # ===== SETUP =====
 TOKEN = os.environ.get('BOT_TOKEN')
 ADMIN_ID = int(os.environ.get('ADMIN_ID', '0'))
+PORT = int(os.environ.get('PORT', 8080))
 
 if not TOKEN or not ADMIN_ID:
     print("❌ Missing BOT_TOKEN or ADMIN_ID")
@@ -240,7 +241,39 @@ PLANS = {
     'enterprise': {'name': '🏢 Enterprise', 'price': 500}
 }
 
-# ===== MAIN MENU =====
+# ===== BOT HANDLERS =====
+
+async def start(update, context):
+    uid = update.effective_user.id
+    username = update.effective_user.username or ""
+    first_name = update.effective_user.first_name or "User"
+    ref = context.args[0] if context.args else 0
+    
+    if ref and int(ref) == uid:
+        ref = 0
+        await update.message.reply_text("⚠️ You cannot refer yourself!")
+    
+    existing = get_user(uid)
+    if existing:
+        await show_main_menu(update, context)
+        return
+    
+    is_new = add_user(uid, username, first_name, int(ref) if ref else 0)
+    
+    if ref and is_new:
+        try:
+            referrer = get_user(int(ref))
+            if referrer:
+                balance = float(referrer[2]) if referrer[2] else 0
+                await context.bot.send_message(
+                    int(ref),
+                    f"🎉 New referral! @{username} joined!\n✅ +15 credits!\n💰 Balance: {balance:.2f}"
+                )
+        except:
+            pass
+    
+    await show_main_menu(update, context)
+
 async def show_main_menu(update, context):
     try:
         if hasattr(update, 'message') and update.message:
@@ -279,47 +312,12 @@ Select an option below:"""
     except Exception as e:
         print(f"❌ Error: {e}")
 
-# ===== START =====
-async def start(update, context):
-    uid = update.effective_user.id
-    username = update.effective_user.username or ""
-    first_name = update.effective_user.first_name or "User"
-    ref = context.args[0] if context.args else 0
-    
-    if ref and int(ref) == uid:
-        ref = 0
-        await update.message.reply_text("⚠️ You cannot refer yourself!")
-    
-    existing = get_user(uid)
-    if existing:
-        await show_main_menu(update, context)
-        return
-    
-    is_new = add_user(uid, username, first_name, int(ref) if ref else 0)
-    
-    if ref and is_new:
-        try:
-            referrer = get_user(int(ref))
-            if referrer:
-                balance = float(referrer[2]) if referrer[2] else 0
-                await context.bot.send_message(
-                    int(ref),
-                    f"🎉 New referral! @{username} joined!\n✅ +15 credits!\n💰 Balance: {balance:.2f}"
-                )
-        except:
-            pass
-    
-    await show_main_menu(update, context)
-
-# ===== MENU =====
 async def menu(update, context):
     await show_main_menu(update, context)
 
-# ===== BACK =====
 async def back(update, context):
     await show_main_menu(update, context)
 
-# ===== PLANS =====
 async def show_plans(update, context):
     query = update.callback_query
     await query.answer()
@@ -332,7 +330,6 @@ async def show_plans(update, context):
     keyboard.append([InlineKeyboardButton("⬅️ BACK", callback_data='back')])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ===== BUY =====
 async def buy_plan(update, context):
     query = update.callback_query
     await query.answer()
@@ -361,7 +358,6 @@ async def buy_plan(update, context):
     )
     await query.edit_message_text(f"✅ {plan['name']} purchased!\n⏳ Admin will activate within 24h.")
 
-# ===== PROFILE =====
 async def profile(update, context):
     query = update.callback_query
     await query.answer()
@@ -380,7 +376,6 @@ async def profile(update, context):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ===== REDEEM =====
 async def redeem(update, context):
     query = update.callback_query
     await query.answer()
@@ -403,7 +398,6 @@ async def redeem_command(update, context):
     else:
         await update.message.reply_text("❌ Invalid code!")
 
-# ===== REFERRAL =====
 async def referral(update, context):
     query = update.callback_query
     await query.answer()
@@ -417,7 +411,6 @@ async def referral(update, context):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ===== LEADERBOARD =====
 async def leaderboard(update, context):
     query = update.callback_query
     await query.answer()
@@ -435,7 +428,6 @@ async def leaderboard(update, context):
     keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ===== SUPPORT =====
 async def support(update, context):
     query = update.callback_query
     await query.answer()
@@ -564,7 +556,7 @@ async def stats_direct(update, context):
 
 # ===== MAIN =====
 def main():
-    print("🚀 Starting bot...")
+    print("🚀 Starting bot with webhook...")
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
@@ -587,8 +579,8 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_stats, pattern='^stats$'))
     app.add_handler(CallbackQueryHandler(admin_pending, pattern='^pending$'))
     
-    print("🤖 Bot is running!")
-    app.run_polling()
+    print("🤖 Bot is running! (Webhook mode)")
+    app.run_webhook(listen="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
     main()
