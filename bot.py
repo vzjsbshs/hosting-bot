@@ -111,11 +111,6 @@ def update_balance(uid, amt):
         c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (float(amt), uid))
         conn.commit()
         conn.close()
-        
-        # Verify balance
-        user = get_user(uid)
-        if user:
-            print(f"✅ New balance for {uid}: {user[3]}")
         return True
     except Exception as e:
         print(f"❌ Error updating balance: {e}")
@@ -422,29 +417,16 @@ async def redeem_command(update, context):
         
         code = context.args[0].upper()
         uid = update.effective_user.id
-        
-        # Check if code exists and is unused
-        conn = db()
-        c = conn.cursor()
-        c.execute('SELECT * FROM codes WHERE code = ? AND used = 0', (code,))
-        result = c.fetchone()
-        conn.close()
-        
-        if not result:
-            await update.message.reply_text("❌ Invalid or already used code!")
-            return
-        
         success, amount = use_code(code, uid)
         
         if success:
             user = get_user(uid)
             balance = float(user[3]) if user[3] else 0
             await update.message.reply_text(
-                f"✅ +{amount} credits!\n💰 Balance: {balance:.2f}\n\n"
-                f"💡 Buy hosting from the PLANS menu!"
+                f"✅ +{amount} credits!\n💰 Balance: {balance:.2f}\n\n💡 Buy hosting from the PLANS menu!"
             )
         else:
-            await update.message.reply_text("❌ Error redeeming code!")
+            await update.message.reply_text("❌ Invalid or already used code!")
     except Exception as e:
         print(f"❌ Error in redeem: {e}")
         await update.message.reply_text("❌ Error! Please try again.")
