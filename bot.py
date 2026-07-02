@@ -208,7 +208,9 @@ async def start(update, context):
             pass
     
     user = get_user(uid)
-    balance = user[2] if user else 0
+    
+    # FIX: Convert balance to float if it's a string
+    balance = float(user[2]) if user and user[2] else 0
     refs = get_refs(uid)
     balance_str = f"{balance:.2f}"
     
@@ -269,8 +271,11 @@ async def buy_plan(update, context):
         await query.edit_message_text("❌ Please /start first!")
         return
     
-    if user[2] < plan['price']:
-        balance_str = f"{user[2]:.2f}"
+    # FIX: Convert balance to float
+    balance = float(user[2]) if user[2] else 0
+    
+    if balance < plan['price']:
+        balance_str = f"{balance:.2f}"
         await query.edit_message_text(f"❌ Need {plan['price']}, have {balance_str}")
         return
     
@@ -297,7 +302,9 @@ async def profile(update, context):
         return
     
     refs = get_refs(uid)
-    balance_str = f"{user[2]:.2f}"
+    # FIX: Convert balance to float
+    balance = float(user[2]) if user[2] else 0
+    balance_str = f"{balance:.2f}"
     
     await query.edit_message_text(
         f"👤 PROFILE\n\nID: {uid}\nBalance: {balance_str}\nReferrals: {refs}",
@@ -324,7 +331,9 @@ async def redeem_command(update, context):
     
     if success:
         user = get_user(uid)
-        balance_str = f"{user[2]:.2f}"
+        # FIX: Convert balance to float
+        balance = float(user[2]) if user[2] else 0
+        balance_str = f"{balance:.2f}"
         await update.message.reply_text(f"✅ +{amount} credits! Balance: {balance_str}")
     else:
         await update.message.reply_text("❌ Invalid code!")
@@ -416,7 +425,7 @@ async def admin_stats(update, context):
     
     total = get_total()
     pending = len(get_orders())
-    total_bal = get_total_balance()
+    total_bal = float(get_total_balance()) if get_total_balance() else 0
     unused = get_unused_codes()
     balance_str = f"{total_bal:.2f}"
     
