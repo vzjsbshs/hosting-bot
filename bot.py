@@ -22,7 +22,6 @@ print("✅ Bot starting...")
 DB = 'bot.db'
 
 def get_db():
-    """Get database connection with proper timeout"""
     conn = sqlite3.connect(DB, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
@@ -145,7 +144,12 @@ def gen_code(amt, created_by):
     try:
         conn = get_db()
         c = conn.cursor()
-        code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
+        # New format: DYNO-X5C6-B3TB-CNB0
+        parts = []
+        for i in range(4):
+            part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+            parts.append(part)
+        code = f"DYNO-{parts[0]}-{parts[1]}-{parts[2]}"
         c.execute('INSERT INTO codes (code, amount, created_by) VALUES (?, ?, ?)', (code, float(amt), created_by))
         conn.commit()
         conn.close()
@@ -160,7 +164,6 @@ def use_code(code, uid):
         conn = get_db()
         c = conn.cursor()
         
-        # Check code
         c.execute('SELECT * FROM codes WHERE code = ? AND used = 0', (code,))
         r = c.fetchone()
         
@@ -170,10 +173,7 @@ def use_code(code, uid):
         
         amount = float(r[1])
         
-        # Update code
         c.execute('UPDATE codes SET used = 1 WHERE code = ?', (code,))
-        
-        # Update balance
         c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amount, uid))
         
         conn.commit()
@@ -301,25 +301,35 @@ async def show_main_menu(update, context):
         refs = get_refs(uid)
         balance_str = f"{balance:.2f}"
         
+        # Colorful buttons with emojis
         keyboard = [
             [InlineKeyboardButton("🌐 HOSTING PLANS", callback_data='plans')],
-            [InlineKeyboardButton("👤 PROFILE", callback_data='profile'), InlineKeyboardButton("🎁 REDEEM", callback_data='redeem')],
-            [InlineKeyboardButton("👥 REFERRAL", callback_data='referral'), InlineKeyboardButton("🏆 LEADERBOARD", callback_data='leaderboard')],
+            [
+                InlineKeyboardButton("👤 PROFILE", callback_data='profile'),
+                InlineKeyboardButton("🎁 REDEEM", callback_data='redeem')
+            ],
+            [
+                InlineKeyboardButton("👥 REFERRAL", callback_data='referral'),
+                InlineKeyboardButton("🏆 LEADERBOARD", callback_data='leaderboard')
+            ],
             [InlineKeyboardButton("📊 SUPPORT", callback_data='support')]
         ]
         
-        text = f"""✨ Welcome to Premium Hosting Bot!
+        text = f"""✨ **Welcome to Premium Hosting Bot!** 
 
-👤 User ID: {uid}
-💰 Balance: {balance_str} credits
-👥 Referrals: {refs}
+👤 User ID: `{uid}`
+💰 Balance: `{balance_str}` Credits
+👥 Referrals: `{refs}`
+
+🔒 Your Invite Link:
+`https://t.me/{context.bot.username}?start={uid}`
 
 Select an option below:"""
         
         if is_message:
-            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         else:
-            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     except Exception as e:
         print(f"❌ Error in main menu: {e}")
 
@@ -349,7 +359,8 @@ async def start(update, context):
                     balance = float(referrer['balance']) if referrer['balance'] else 0
                     await context.bot.send_message(
                         int(ref),
-                        f"🎉 New referral! @{username} joined!\n✅ +15 credits!\n💰 Balance: {balance:.2f}"
+                        f"🎉 **New Referral!**\n\n@{username} joined using your link!\n✅ +15 Credits!\n💰 Balance: {balance:.2f} Credits",
+                        parse_mode='Markdown'
                     )
             except Exception as e:
                 print(f"❌ Error notifying referrer: {e}")
@@ -373,13 +384,13 @@ async def show_plans(update, context):
         query = update.callback_query
         await query.answer()
         
-        text = "🌐 HOSTING PLANS\n\n"
+        text = "🌐 **HOSTING PLANS**\n\n"
         keyboard = []
         for k, v in PLANS.items():
-            text += f"{v['name']} - {v['price']} credits\n"
-            keyboard.append([InlineKeyboardButton(f"Buy {v['name']}", callback_data=f'buy_{k}')])
-        keyboard.append([InlineKeyboardButton("⬅️ BACK", callback_data='back')])
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            text += f"{v['name']} - `{v['price']}` Credits\n"
+            keyboard.append([InlineKeyboardButton(f"🛒 Buy {v['name']} - {v['price']} Credits", callback_data=f'buy_{k}')])
+        keyboard.append([InlineKeyboardButton("⬅️ BACK TO MENU", callback_data='back')])
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     except Exception as e:
         print(f"❌ Error in plans: {e}")
 
@@ -401,7 +412,7 @@ async def buy_plan(update, context):
         balance = float(user['balance']) if user['balance'] else 0
         
         if balance < plan['price']:
-            await query.edit_message_text(f"❌ Need {plan['price']}, have {balance:.2f}")
+            await query.edit_message_text(f"❌ **Insufficient Balance!**\n\nNeed: `{plan['price']}` Credits\nHave: `{balance:.2f}` Credits\n\n💡 Earn more via referrals or redeem codes!", parse_mode='Markdown')
             return
         
         update_balance(uid, -plan['price'])
@@ -409,9 +420,10 @@ async def buy_plan(update, context):
         
         await context.bot.send_message(
             ADMIN_ID,
-            f"🔔 NEW ORDER!\nUser: {uid}\nPlan: {plan['name']}\nUsername: {username}\nPassword: {password}"
+            f"🔔 **NEW ORDER!**\n\n👤 User: `{uid}`\n📦 Plan: {plan['name']}\n👤 Username: `{username}`\n🔑 Password: `{password}`\n\nConfirm: `/confirm ORDER_ID`",
+            parse_mode='Markdown'
         )
-        await query.edit_message_text(f"✅ {plan['name']} purchased!\n⏳ Admin will activate within 24h.")
+        await query.edit_message_text(f"✅ **{plan['name']} Purchased!**\n\n⏳ Admin will activate within 24h.\n📌 Order ID: #{uid}", parse_mode='Markdown')
     except Exception as e:
         print(f"❌ Error in buy: {e}")
 
@@ -429,11 +441,18 @@ async def profile(update, context):
         
         refs = get_refs(uid)
         balance = float(user['balance']) if user['balance'] else 0
-        keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
-        await query.edit_message_text(
-            f"👤 PROFILE\n\nID: {uid}\nBalance: {balance:.2f}\nReferrals: {refs}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        keyboard = [[InlineKeyboardButton("⬅️ BACK TO MENU", callback_data='back')]]
+        
+        text = f"""👤 **USER PROFILE**
+
+🆔 User ID: `{uid}`
+📛 Username: @{user['username'] or 'N/A'}
+💰 Balance: `{balance:.2f}` Credits
+👥 Total Referrals: `{refs}`
+
+📊 **Referral Progress:** {refs}/5 for bonus!"""
+        
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     except Exception as e:
         print(f"❌ Error in profile: {e}")
 
@@ -441,36 +460,44 @@ async def profile(update, context):
 async def redeem(update, context):
     query = update.callback_query
     await query.answer()
-    keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
-    await query.edit_message_text("🎁 REDEEM\n\nSend: /redeem CODE", reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard = [[InlineKeyboardButton("⬅️ BACK TO MENU", callback_data='back')]]
+    await query.edit_message_text(
+        "🎁 **REDEEM CODE**\n\nSend the code using:\n`/redeem DYNO-XXXX-XXXX-XXXX`\n\n💡 Codes are provided by admins during promotions!",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
 
 async def redeem_command(update, context):
     try:
         if not context.args:
-            await update.message.reply_text("❌ Usage: /redeem CODE")
+            await update.message.reply_text(
+                "❌ **Usage:** `/redeem DYNO-XXXX-XXXX-XXXX`\n\nExample: `/redeem DYNO-X5C6-B3TB-CNB0`",
+                parse_mode='Markdown'
+            )
             return
         
         code = context.args[0].upper()
         uid = update.effective_user.id
         
-        # Check if user exists
         user = get_user(uid)
         if not user:
             await update.message.reply_text("❌ Please /start first!")
             return
         
-        # Use the code
         success, amount = use_code(code, uid)
         
         if success:
-            # Get updated balance
             user = get_user(uid)
             balance = float(user['balance']) if user['balance'] else 0
             await update.message.reply_text(
-                f"✅ +{amount} credits!\n💰 Balance: {balance:.2f}\n\n💡 Buy hosting from the PLANS menu!"
+                f"✅ **Redeem Successful!**\n\n💰 +`{amount}` Credits Added!\n💳 New Balance: `{balance:.2f}` Credits\n\n💡 Buy hosting from the PLANS menu!",
+                parse_mode='Markdown'
             )
         else:
-            await update.message.reply_text("❌ Invalid or already used code!")
+            await update.message.reply_text(
+                "❌ **Invalid Code!**\n\n• Code may be expired\n• Code may already be used\n• Please check and try again",
+                parse_mode='Markdown'
+            )
     except Exception as e:
         print(f"❌ Error in redeem: {e}")
         await update.message.reply_text("❌ Error! Please try again.")
@@ -484,11 +511,23 @@ async def referral(update, context):
         uid = query.from_user.id
         link = f"https://t.me/{context.bot.username}?start={uid}"
         refs = get_refs(uid)
-        keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
-        await query.edit_message_text(
-            f"👥 REFERRAL\n\n🔗 {link}\n\n📊 Referrals: {refs}\n\n🎁 15 credits/referral\n🎁 25 bonus every 5 referrals",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        keyboard = [[InlineKeyboardButton("⬅️ BACK TO MENU", callback_data='back')]]
+        
+        text = f"""👥 **REFERRAL PROGRAM**
+
+🔗 **Your Invite Link:**
+`{link}`
+
+📊 **Your Referrals:** `{refs}`
+
+🎁 **Rewards System:**
+• `15` Credits per referral
+• `25` Bonus Credits every 5 referrals
+• Top referrers get exclusive rewards!
+
+📢 Share your link and earn free hosting!"""
+        
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     except Exception as e:
         print(f"❌ Error in referral: {e}")
 
@@ -499,17 +538,17 @@ async def leaderboard(update, context):
         await query.answer()
         
         top = get_top_users(10)
-        text = "🏆 TOP REFERRERS\n\n"
+        text = "🏆 **TOP REFERRERS**\n\n"
         if not top:
-            text += "No users yet!"
+            text += "No users yet! Be the first! 🚀"
         else:
             for i, u in enumerate(top, 1):
                 medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"{i}."
                 name = f"@{u[1]}" if u[1] else f"User {u[0]}"
-                text += f"{medal} {name} - {u[2]} referrals\n"
+                text += f"{medal} {name}\n   👥 {u[2]} referrals | 💰 {u[3]:.0f} credits\n\n"
         
-        keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard = [[InlineKeyboardButton("⬅️ BACK TO MENU", callback_data='back')]]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     except Exception as e:
         print(f"❌ Error in leaderboard: {e}")
 
@@ -517,44 +556,52 @@ async def leaderboard(update, context):
 async def support(update, context):
     query = update.callback_query
     await query.answer()
-    keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
-    text = """📊 SUPPORT
+    keyboard = [[InlineKeyboardButton("⬅️ BACK TO MENU", callback_data='back')]]
+    text = """📊 **SUPPORT CENTER**
 
-❓ How to earn?
-1. Refer friends → 15 credits
-2. Every 5 referrals → 25 bonus
-3. Redeem codes
+❓ **How to earn credits?**
+1. Refer friends → 15 credits each
+2. Every 5 referrals → 25 bonus credits
+3. Redeem promo codes
 
-❓ How to get hosting?
+❓ **How to get hosting?**
 1. Earn 50+ credits
-2. Buy a plan
-3. Admin creates hosting
+2. Buy a plan from PLANS menu
+3. Admin creates hosting for you
 
-Commands:
+❓ **Need help?**
+Contact admin: @Free_hostingbyreferbot
+
+🛠️ **Commands:**
 /start - Main menu
 /menu - Show menu
 /redeem - Redeem code"""
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 # ===== ADMIN =====
 async def admin_panel(update, context):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Unauthorized!")
+        await update.message.reply_text("❌ **Unauthorized!**", parse_mode='Markdown')
         return
     
     pending = get_orders()
     total = get_total()
     keyboard = [
-        [InlineKeyboardButton("🔑 Generate Code", callback_data='gen_code')],
-        [InlineKeyboardButton("📊 Stats", callback_data='stats')],
-        [InlineKeyboardButton("📦 Orders", callback_data='pending')]
+        [InlineKeyboardButton("🔑 GENERATE CODE", callback_data='gen_code')],
+        [InlineKeyboardButton("📊 STATISTICS", callback_data='stats')],
+        [InlineKeyboardButton("📦 PENDING ORDERS", callback_data='pending')]
     ]
-    await update.message.reply_text(f"🛠️ ADMIN\nUsers: {total}\nPending: {len(pending)}", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(
+        f"🛠️ **ADMIN PANEL**\n\n👥 Users: `{total}`\n📦 Pending: `{len(pending)}`",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
 
 async def admin_gen_code(update, context):
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("Send: /gencode AMOUNT")
+    await query.edit_message_text("🔑 **Generate Code**\n\nSend: `/gencode AMOUNT`\nExample: `/gencode 100`", parse_mode='Markdown')
 
 async def admin_stats(update, context):
     query = update.callback_query
@@ -563,39 +610,45 @@ async def admin_stats(update, context):
     pending = len(get_orders())
     total_bal = float(get_total_balance()) if get_total_balance() else 0
     unused = get_unused_codes()
-    await query.edit_message_text(f"📊 STATS\nUsers: {total}\nPending: {pending}\nBalance: {total_bal:.2f}\nUnused Codes: {unused}")
+    await query.edit_message_text(
+        f"📊 **BOT STATISTICS**\n\n👥 Users: `{total}`\n📦 Pending: `{pending}`\n💰 Balance: `{total_bal:.2f}`\n🎁 Unused Codes: `{unused}`",
+        parse_mode='Markdown'
+    )
 
 async def admin_pending(update, context):
     query = update.callback_query
     await query.answer()
     orders = get_orders()
     if not orders:
-        await query.edit_message_text("No orders")
+        await query.edit_message_text("📦 **No pending orders!**", parse_mode='Markdown')
         return
-    text = "📦 ORDERS\n\n"
+    text = "📦 **PENDING ORDERS**\n\n"
     for o in orders:
-        text += f"ID: {o[0]} | User: {o[1]} | {o[2]}\n"
-    text += "\nConfirm: /confirm ID"
-    await query.edit_message_text(text)
+        text += f"🆔 Order: `{o[0]}`\n👤 User: `{o[1]}`\n📦 Plan: {o[2]}\n👤 Username: `{o[3]}`\n🔑 Password: `{o[4]}`\n\n"
+    text += "To confirm: `/confirm ORDER_ID`"
+    await query.edit_message_text(text, parse_mode='Markdown')
 
 async def generate_code(update, context):
     if update.effective_user.id != ADMIN_ID:
         return
     if not context.args:
-        await update.message.reply_text("Usage: /gencode AMOUNT")
+        await update.message.reply_text("❌ Usage: `/gencode AMOUNT`\nExample: `/gencode 100`", parse_mode='Markdown')
         return
     amount = float(context.args[0])
     code = gen_code(amount, ADMIN_ID)
     if code:
-        await update.message.reply_text(f"✅ Code: {code}\nAmount: {amount}")
+        await update.message.reply_text(
+            f"✅ **Code Generated!**\n\n🔑 Code: `{code}`\n💰 Amount: `{amount}` Credits\n\nShare with users:\n`/redeem {code}`",
+            parse_mode='Markdown'
+        )
     else:
-        await update.message.reply_text("❌ Error")
+        await update.message.reply_text("❌ Error generating code!")
 
 async def confirm_order_cmd(update, context):
     if update.effective_user.id != ADMIN_ID:
         return
     if not context.args:
-        await update.message.reply_text("Usage: /confirm ID")
+        await update.message.reply_text("❌ Usage: `/confirm ORDER_ID`\nExample: `/confirm 1`", parse_mode='Markdown')
         return
     try:
         order_id = int(context.args[0])
@@ -605,40 +658,50 @@ async def confirm_order_cmd(update, context):
         result = c.fetchone()
         conn.close()
         if not result:
-            await update.message.reply_text("Order not found!")
+            await update.message.reply_text("❌ Order not found or already confirmed!")
             return
         confirm_order(order_id)
-        await context.bot.send_message(result[0], "🎉 Hosting is now active!")
-        await update.message.reply_text(f"✅ Order {order_id} confirmed!")
+        await context.bot.send_message(
+            result[0],
+            "🎉 **Your Hosting is Now ACTIVE!**\n\n📌 Login: https://infinityfree.net/control-panel\n🔑 Check your email for credentials\n\nThank you for choosing us! 🚀",
+            parse_mode='Markdown'
+        )
+        await update.message.reply_text(f"✅ **Order {order_id} confirmed!** User notified.")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
 async def gencode_direct(update, context):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Unauthorized!")
+        await update.message.reply_text("❌ Unauthorized!", parse_mode='Markdown')
         return
     if not context.args:
-        await update.message.reply_text("Usage: /gencode AMOUNT")
+        await update.message.reply_text("❌ Usage: `/gencode AMOUNT`\nExample: `/gencode 100`", parse_mode='Markdown')
         return
     try:
         amount = float(context.args[0])
         code = gen_code(amount, ADMIN_ID)
         if code:
-            await update.message.reply_text(f"✅ Code: {code}\nAmount: {amount}")
+            await update.message.reply_text(
+                f"✅ **Code Generated!**\n\n🔑 Code: `{code}`\n💰 Amount: `{amount}` Credits",
+                parse_mode='Markdown'
+            )
         else:
-            await update.message.reply_text("❌ Error")
+            await update.message.reply_text("❌ Error generating code!")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
 async def stats_direct(update, context):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Unauthorized!")
+        await update.message.reply_text("❌ Unauthorized!", parse_mode='Markdown')
         return
     total = get_total()
     pending = len(get_orders())
     total_bal = float(get_total_balance()) if get_total_balance() else 0
     unused = get_unused_codes()
-    await update.message.reply_text(f"📊 STATS\nUsers: {total}\nPending: {pending}\nBalance: {total_bal:.2f}\nUnused Codes: {unused}")
+    await update.message.reply_text(
+        f"📊 **BOT STATISTICS**\n\n👥 Users: `{total}`\n📦 Pending: `{pending}`\n💰 Balance: `{total_bal:.2f}`\n🎁 Unused Codes: `{unused}`",
+        parse_mode='Markdown'
+    )
 
 # ===== MAIN =====
 def main():
