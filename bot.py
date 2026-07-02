@@ -26,13 +26,10 @@ def db():
 def init():
     conn = db()
     c = conn.cursor()
-    
-    # Drop existing tables to fix corruption
     c.execute('DROP TABLE IF EXISTS users')
     c.execute('DROP TABLE IF EXISTS codes')
     c.execute('DROP TABLE IF EXISTS orders')
     
-    # Create fresh tables
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
@@ -60,9 +57,8 @@ def init():
     )''')
     conn.commit()
     conn.close()
-    print("✅ Database reinitialized!")
+    print("✅ Database initialized!")
 
-# Initialize fresh database
 init()
 
 # ===== DATABASE FUNCTIONS =====
@@ -240,27 +236,20 @@ PLANS = {
     'enterprise': {'name': '🏢 Enterprise', 'price': 500}
 }
 
-# ===== START COMMAND =====
-async def start(update, context):
+# ===== MAIN MENU FUNCTION =====
+async def show_main_menu(update, context):
+    """Show the main menu - works for both /start and back button"""
     try:
-        print(f"✅ /start received from {update.effective_user.id}")
-        
-        uid = update.effective_user.id
-        username = update.effective_user.username or ""
-        first_name = update.effective_user.first_name or "User"
-        ref = context.args[0] if context.args else 0
-        
-        add_user(uid, username, first_name, int(ref) if ref else 0)
-        
-        if ref:
-            try:
-                await context.bot.send_message(int(ref), f"🎉 New referral! +15 credits!")
-            except:
-                pass
+        # Get user ID from either message or callback query
+        if hasattr(update, 'message') and update.message:
+            uid = update.message.from_user.id
+        else:
+            query = update.callback_query
+            uid = query.from_user.id
+            await query.answer()
         
         user = get_user(uid)
         
-        # Safely get balance
         balance = 0
         if user and len(user) > 2:
             try:
@@ -286,21 +275,43 @@ async def start(update, context):
 
 Select an option below:"""
         
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-        print(f"✅ Response sent to {uid}")
+        # Reply to message or edit existing message
+        if hasattr(update, 'message') and update.message:
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        
+        print(f"✅ Main menu shown to {uid}")
     except Exception as e:
-        print(f"❌ Error in start: {e}")
-        await update.message.reply_text("⚠️ An error occurred. Please try again.")
+        print(f"❌ Error in main menu: {e}")
+
+# ===== START COMMAND =====
+async def start(update, context):
+    print(f"✅ /start received from {update.effective_user.id}")
+    
+    uid = update.effective_user.id
+    username = update.effective_user.username or ""
+    first_name = update.effective_user.first_name or "User"
+    ref = context.args[0] if context.args else 0
+    
+    add_user(uid, username, first_name, int(ref) if ref else 0)
+    
+    if ref:
+        try:
+            await context.bot.send_message(int(ref), f"🎉 New referral! +15 credits!")
+        except:
+            pass
+    
+    await show_main_menu(update, context)
 
 # ===== MENU COMMAND =====
 async def menu(update, context):
-    await start(update, context)
+    await show_main_menu(update, context)
 
 # ===== BACK BUTTON =====
 async def back(update, context):
-    query = update.callback_query
-    await query.answer()
-    await start(update, context)
+    """Back button handler - shows main menu"""
+    await show_main_menu(update, context)
 
 # ===== PLANS =====
 async def show_plans(update, context):
@@ -335,7 +346,6 @@ async def buy_plan(update, context):
             await query.edit_message_text("❌ Please /start first!")
             return
         
-        # Safely get balance
         balance = 0
         try:
             balance = float(user[2]) if user[2] is not None else 0
@@ -382,9 +392,11 @@ async def profile(update, context):
             balance = 0
         balance_str = f"{balance:.2f}"
         
+        keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
+        
         await query.edit_message_text(
             f"👤 PROFILE\n\nID: {uid}\nBalance: {balance_str}\nReferrals: {refs}",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BACK", callback_data='back')]])
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
     except Exception as e:
         print(f"❌ Error in profile: {e}")
@@ -393,9 +405,12 @@ async def profile(update, context):
 async def redeem(update, context):
     query = update.callback_query
     await query.answer()
+    
+    keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
+    
     await query.edit_message_text(
         "🎁 REDEEM\n\nSend: /redeem CODE",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BACK", callback_data='back')]])
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def redeem_command(update, context):
@@ -432,9 +447,11 @@ async def referral(update, context):
         link = f"https://t.me/{context.bot.username}?start={uid}"
         refs = get_refs(uid)
         
+        keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
+        
         await query.edit_message_text(
             f"👥 REFERRAL\n\nLink: {link}\nReferrals: {refs}\n\n15 credits each",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BACK", callback_data='back')]])
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
     except Exception as e:
         print(f"❌ Error in referral: {e}")
@@ -459,7 +476,8 @@ async def leaderboard(update, context):
                 name = f"@{u[1]}" if u[1] else f"User {u[0]}"
                 text += f"{medal} {name} - {u[2]} referrals\n"
         
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]))
+        keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception as e:
         print(f"❌ Error in leaderboard: {e}")
 
@@ -467,6 +485,8 @@ async def leaderboard(update, context):
 async def support(update, context):
     query = update.callback_query
     await query.answer()
+    
+    keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
     
     text = """📊 SUPPORT
 
@@ -485,7 +505,7 @@ Commands:
 /menu - Show menu
 /redeem - Redeem code"""
     
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]))
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ===== ADMIN =====
 async def admin_panel(update, context):
