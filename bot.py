@@ -26,10 +26,13 @@ def db():
 def init():
     conn = db()
     c = conn.cursor()
+    
+    # COMPLETELY RESET DATABASE
     c.execute('DROP TABLE IF EXISTS users')
     c.execute('DROP TABLE IF EXISTS codes')
     c.execute('DROP TABLE IF EXISTS orders')
     
+    # Create fresh tables with proper data types
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         username TEXT,
@@ -57,7 +60,7 @@ def init():
     )''')
     conn.commit()
     conn.close()
-    print("✅ Database initialized!")
+    print("✅ Database reset and initialized!")
 
 init()
 
@@ -70,8 +73,12 @@ def get_user(uid):
         c.execute('SELECT * FROM users WHERE user_id = ?', (uid,))
         r = c.fetchone()
         conn.close()
-        return r
-    except:
+        if r:
+            # Ensure balance is float
+            return (r[0], r[1], r[2], float(r[3]) if r[3] else 0, r[4], r[5], r[6])
+        return None
+    except Exception as e:
+        print(f"❌ Error getting user: {e}")
         return None
 
 def add_user(uid, username, first_name, ref=0):
@@ -87,7 +94,8 @@ def add_user(uid, username, first_name, ref=0):
         c.execute('INSERT INTO users (user_id, username, first_name, referred_by) VALUES (?, ?, ?, ?)',
                   (uid, username, first_name, ref))
         
-        if ref:
+        if ref and ref != uid:
+            # Add referral bonus
             c.execute('UPDATE users SET balance = balance + 15, referrals = referrals + 1 WHERE user_id = ?', (ref,))
             c.execute('SELECT referrals FROM users WHERE user_id = ?', (ref,))
             count = c.fetchone()[0]
@@ -98,18 +106,19 @@ def add_user(uid, username, first_name, ref=0):
         conn.close()
         return True
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"❌ Error in add_user: {e}")
         return False
 
 def update_balance(uid, amt):
     try:
         conn = db()
         c = conn.cursor()
-        c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amt, uid))
+        c.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (float(amt), uid))
         conn.commit()
         conn.close()
         return True
-    except:
+    except Exception as e:
+        print(f"❌ Error updating balance: {e}")
         return False
 
 def get_refs(uid):
@@ -128,7 +137,7 @@ def gen_code(amt, created_by):
         conn = db()
         c = conn.cursor()
         code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
-        c.execute('INSERT INTO codes (code, amount, created_by) VALUES (?, ?, ?)', (code, amt, created_by))
+        c.execute('INSERT INTO codes (code, amount, created_by) VALUES (?, ?, ?)', (code, float(amt), created_by))
         conn.commit()
         conn.close()
         return code
@@ -253,7 +262,11 @@ async def show_main_menu(update, context):
             is_message = False
         
         user = get_user(uid)
-        balance = float(user[2]) if user and user[2] else 0
+        if user:
+            balance = float(user[3]) if user[3] else 0
+        else:
+            balance = 0
+        
         refs = get_refs(uid)
         balance_str = f"{balance:.2f}"
         
@@ -277,39 +290,43 @@ Select an option below:"""
         else:
             await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"❌ Error in main menu: {e}")
 
 # ===== START =====
 async def start(update, context):
-    uid = update.effective_user.id
-    username = update.effective_user.username or ""
-    first_name = update.effective_user.first_name or "User"
-    ref = context.args[0] if context.args else 0
-    
-    if ref and int(ref) == uid:
-        ref = 0
-        await update.message.reply_text("⚠️ You cannot refer yourself!")
-    
-    existing = get_user(uid)
-    if existing:
+    try:
+        uid = update.effective_user.id
+        username = update.effective_user.username or ""
+        first_name = update.effective_user.first_name or "User"
+        ref = context.args[0] if context.args else 0
+        
+        if ref and int(ref) == uid:
+            ref = 0
+            await update.message.reply_text("⚠️ You cannot refer yourself!")
+        
+        existing = get_user(uid)
+        if existing:
+            await show_main_menu(update, context)
+            return
+        
+        is_new = add_user(uid, username, first_name, int(ref) if ref else 0)
+        
+        if ref and is_new:
+            try:
+                referrer = get_user(int(ref))
+                if referrer:
+                    balance = float(referrer[3]) if referrer[3] else 0
+                    await context.bot.send_message(
+                        int(ref),
+                        f"🎉 New referral! @{username} joined!\n✅ +15 credits!\n💰 Balance: {balance:.2f}"
+                    )
+            except:
+                pass
+        
         await show_main_menu(update, context)
-        return
-    
-    is_new = add_user(uid, username, first_name, int(ref) if ref else 0)
-    
-    if ref and is_new:
-        try:
-            referrer = get_user(int(ref))
-            if referrer:
-                balance = float(referrer[2]) if referrer[2] else 0
-                await context.bot.send_message(
-                    int(ref),
-                    f"🎉 New referral! @{username} joined!\n✅ +15 credits!\n💰 Balance: {balance:.2f}"
-                )
-        except:
-            pass
-    
-    await show_main_menu(update, context)
+    except Exception as e:
+        print(f"❌ Error in start: {e}")
+        await update.message.reply_text("⚠️ An error occurred. Please try again.")
 
 # ===== MENU =====
 async def menu(update, context):
@@ -321,64 +338,73 @@ async def back(update, context):
 
 # ===== PLANS =====
 async def show_plans(update, context):
-    query = update.callback_query
-    await query.answer()
-    
-    text = "🌐 HOSTING PLANS\n\n"
-    keyboard = []
-    for k, v in PLANS.items():
-        text += f"{v['name']} - {v['price']} credits\n"
-        keyboard.append([InlineKeyboardButton(f"Buy {v['name']}", callback_data=f'buy_{k}')])
-    keyboard.append([InlineKeyboardButton("⬅️ BACK", callback_data='back')])
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        text = "🌐 HOSTING PLANS\n\n"
+        keyboard = []
+        for k, v in PLANS.items():
+            text += f"{v['name']} - {v['price']} credits\n"
+            keyboard.append([InlineKeyboardButton(f"Buy {v['name']}", callback_data=f'buy_{k}')])
+        keyboard.append([InlineKeyboardButton("⬅️ BACK", callback_data='back')])
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception as e:
+        print(f"❌ Error in plans: {e}")
 
 # ===== BUY =====
 async def buy_plan(update, context):
-    query = update.callback_query
-    await query.answer()
-    
-    uid = query.from_user.id
-    key = query.data.split('_')[1]
-    plan = PLANS[key]
-    user = get_user(uid)
-    
-    if not user:
-        await query.edit_message_text("❌ Please /start first!")
-        return
-    
-    balance = float(user[2]) if user[2] else 0
-    
-    if balance < plan['price']:
-        await query.edit_message_text(f"❌ Need {plan['price']}, have {balance:.2f}")
-        return
-    
-    update_balance(uid, -plan['price'])
-    username, password = add_order(uid, plan['name'])
-    
-    await context.bot.send_message(
-        ADMIN_ID,
-        f"🔔 NEW ORDER!\nUser: {uid}\nPlan: {plan['name']}\nUsername: {username}\nPassword: {password}"
-    )
-    await query.edit_message_text(f"✅ {plan['name']} purchased!\n⏳ Admin will activate within 24h.")
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        uid = query.from_user.id
+        key = query.data.split('_')[1]
+        plan = PLANS[key]
+        user = get_user(uid)
+        
+        if not user:
+            await query.edit_message_text("❌ Please /start first!")
+            return
+        
+        balance = float(user[3]) if user[3] else 0
+        
+        if balance < plan['price']:
+            await query.edit_message_text(f"❌ Need {plan['price']}, have {balance:.2f}")
+            return
+        
+        update_balance(uid, -plan['price'])
+        username, password = add_order(uid, plan['name'])
+        
+        await context.bot.send_message(
+            ADMIN_ID,
+            f"🔔 NEW ORDER!\nUser: {uid}\nPlan: {plan['name']}\nUsername: {username}\nPassword: {password}"
+        )
+        await query.edit_message_text(f"✅ {plan['name']} purchased!\n⏳ Admin will activate within 24h.")
+    except Exception as e:
+        print(f"❌ Error in buy: {e}")
 
 # ===== PROFILE =====
 async def profile(update, context):
-    query = update.callback_query
-    await query.answer()
-    
-    uid = query.from_user.id
-    user = get_user(uid)
-    if not user:
-        await query.edit_message_text("❌ Please /start first!")
-        return
-    
-    refs = get_refs(uid)
-    balance = float(user[2]) if user[2] else 0
-    keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
-    await query.edit_message_text(
-        f"👤 PROFILE\n\nID: {uid}\nBalance: {balance:.2f}\nReferrals: {refs}",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        uid = query.from_user.id
+        user = get_user(uid)
+        if not user:
+            await query.edit_message_text("❌ Please /start first!")
+            return
+        
+        refs = get_refs(uid)
+        balance = float(user[3]) if user[3] else 0
+        keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
+        await query.edit_message_text(
+            f"👤 PROFILE\n\nID: {uid}\nBalance: {balance:.2f}\nReferrals: {refs}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception as e:
+        print(f"❌ Error in profile: {e}")
 
 # ===== REDEEM =====
 async def redeem(update, context):
@@ -388,52 +414,61 @@ async def redeem(update, context):
     await query.edit_message_text("🎁 REDEEM\n\nSend: /redeem CODE", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def redeem_command(update, context):
-    if not context.args:
-        await update.message.reply_text("❌ Usage: /redeem CODE")
-        return
-    
-    code = context.args[0].upper()
-    uid = update.effective_user.id
-    success, amount = use_code(code, uid)
-    
-    if success:
-        user = get_user(uid)
-        balance = float(user[2]) if user[2] else 0
-        await update.message.reply_text(f"✅ +{amount} credits!\n💰 Balance: {balance:.2f}")
-    else:
-        await update.message.reply_text("❌ Invalid code!")
+    try:
+        if not context.args:
+            await update.message.reply_text("❌ Usage: /redeem CODE")
+            return
+        
+        code = context.args[0].upper()
+        uid = update.effective_user.id
+        success, amount = use_code(code, uid)
+        
+        if success:
+            user = get_user(uid)
+            balance = float(user[3]) if user[3] else 0
+            await update.message.reply_text(f"✅ +{amount} credits!\n💰 Balance: {balance:.2f}")
+        else:
+            await update.message.reply_text("❌ Invalid code!")
+    except Exception as e:
+        print(f"❌ Error in redeem: {e}")
 
 # ===== REFERRAL =====
 async def referral(update, context):
-    query = update.callback_query
-    await query.answer()
-    
-    uid = query.from_user.id
-    link = f"https://t.me/{context.bot.username}?start={uid}"
-    refs = get_refs(uid)
-    keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
-    await query.edit_message_text(
-        f"👥 REFERRAL\n\n🔗 {link}\n\n📊 Referrals: {refs}\n\n🎁 15 credits/referral\n🎁 25 bonus every 5 referrals",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        uid = query.from_user.id
+        link = f"https://t.me/{context.bot.username}?start={uid}"
+        refs = get_refs(uid)
+        keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
+        await query.edit_message_text(
+            f"👥 REFERRAL\n\n🔗 {link}\n\n📊 Referrals: {refs}\n\n🎁 15 credits/referral\n🎁 25 bonus every 5 referrals",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception as e:
+        print(f"❌ Error in referral: {e}")
 
 # ===== LEADERBOARD =====
 async def leaderboard(update, context):
-    query = update.callback_query
-    await query.answer()
-    
-    top = get_top_users(10)
-    text = "🏆 TOP REFERRERS\n\n"
-    if not top:
-        text += "No users yet!"
-    else:
-        for i, u in enumerate(top, 1):
-            medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"{i}."
-            name = f"@{u[1]}" if u[1] else f"User {u[0]}"
-            text += f"{medal} {name} - {u[2]} referrals\n"
-    
-    keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        top = get_top_users(10)
+        text = "🏆 TOP REFERRERS\n\n"
+        if not top:
+            text += "No users yet!"
+        else:
+            for i, u in enumerate(top, 1):
+                medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"{i}."
+                name = f"@{u[1]}" if u[1] else f"User {u[0]}"
+                text += f"{medal} {name} - {u[2]} referrals\n"
+        
+        keyboard = [[InlineKeyboardButton("⬅️ BACK", callback_data='back')]]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception as e:
+        print(f"❌ Error in leaderboard: {e}")
 
 # ===== SUPPORT =====
 async def support(update, context):
